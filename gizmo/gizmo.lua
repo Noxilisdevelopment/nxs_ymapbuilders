@@ -243,11 +243,11 @@ local function gizmoLoop(entity)
         return
     end
 
-    -- Réamorcer le mode curseur interne de FiveM (Im3D) pour déclencher SetControlBypasses
-    for _ = 1, 20 do
+    -- Mode curseur interne de FiveM (Im3D) pour la saisie des axes
+    if not isCursorActive then
         EnterCursorMode()
+        isCursorActive = true
     end
-    isCursorActive = true
     currentEntity = entity
     currentMode = 'Translate'
 
@@ -656,8 +656,10 @@ local function gizmoLoop(entity)
         end
     end
     
-    isCursorActive = false
-    pcall(LeaveCursorMode)
+    if isCursorActive then
+        isCursorActive = false
+        pcall(LeaveCursorMode)
+    end
 
     RenderScriptCams(false, true, 400, true, true)
     DestroyCam(cam, false)
@@ -985,8 +987,10 @@ lib.addKeybind({
 AddEventHandler('onResourceStop', function(resourceName)
     if GetCurrentResourceName() ~= resourceName then return end
     gizmoEnabled = false
-    isCursorActive = false
-    pcall(LeaveCursorMode)
+    if isCursorActive then
+        isCursorActive = false
+        pcall(LeaveCursorMode)
+    end
     pcall(function() lib.hideTextUI() end)
     if currentCam and DoesCamExist(currentCam) then
         RenderScriptCams(false, false, 0, true, true)
@@ -997,3 +1001,19 @@ AddEventHandler('onResourceStop', function(resourceName)
     FreezeEntityPosition(playerPed, false)
     SetEntityVisible(playerPed, true, false)
 end)
+
+-- Commande de secours pour purger instantanément tout résidu de curseur sans redémarrer le jeu
+RegisterCommand('fixcursor', function()
+    for _ = 1, 60 do
+        pcall(LeaveCursorMode)
+    end
+    SetNuiFocus(false, false)
+    SetNuiFocusKeepInput(false)
+    pcall(function() lib.hideTextUI() end)
+    lib.notify({
+        title = 'Curseur',
+        description = 'Curseur et interface réinitialisés.',
+        type = 'success'
+    })
+    print('^2[YMAP BUILDER]^7 Curseur purgé et réinitialisé.')
+end, false)
