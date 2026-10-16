@@ -34,12 +34,11 @@ local function normalize(x, y, z)
     return x / length, y / length, z / length
 end
 
-local sharedMatrixBuffer = dataview.ArrayBuffer(60)
-
 local function makeEntityMatrix(entity)
     local f, r, u, a = GetEntityMatrix(entity)
+    local view = dataview.ArrayBuffer(60)
 
-    sharedMatrixBuffer:SetFloat32(0, r[1])
+    view:SetFloat32(0, r[1])
         :SetFloat32(4, r[2])
         :SetFloat32(8, r[3])
         :SetFloat32(12, 0)
@@ -56,7 +55,7 @@ local function makeEntityMatrix(entity)
         :SetFloat32(56, a[3])
         :SetFloat32(60, 1)
 
-    return sharedMatrixBuffer
+    return view
 end
 
 local function applyEntityMatrix(entity, view)
@@ -81,6 +80,7 @@ local function applyEntityMatrix(entity, view)
         x3, y3, z3,
         tx, ty, tz
     )
+    SetEntityCoordsNoOffset(entity, tx, ty, tz, false, false, false)
 
     if isSnapEnabled and currentMode == 'Rotate' then
         local r = GetEntityRotation(entity, 2)
@@ -152,11 +152,11 @@ function PickPlacedPropUnderMouse(cam, customX, customY)
 
     -- 1. Test physique direct StartShapeTestSweptSphere (flag 16 pour objets, puis 287 pour toutes entités)
     local dest = rayOrigin + (rayDir * 120.0)
-    local ray = StartShapeTestSweptSphere(rayOrigin.x, rayOrigin.y, rayOrigin.z, dest.x, dest.y, dest.z, 0.15, 16, currentEntity or 0, 0)
+    local ray = StartShapeTestSweptSphere(rayOrigin.x, rayOrigin.y, rayOrigin.z, dest.x, dest.y, dest.z, 0.15, 16, 0, 0)
     local _, hit, hitCoords, _, entityHit = GetShapeTestResult(ray)
 
     if not hit or entityHit == 0 or not DoesEntityExist(entityHit) then
-        local rayAll = StartShapeTestSweptSphere(rayOrigin.x, rayOrigin.y, rayOrigin.z, dest.x, dest.y, dest.z, 0.2, 287, currentEntity or 0, 0)
+        local rayAll = StartShapeTestSweptSphere(rayOrigin.x, rayOrigin.y, rayOrigin.z, dest.x, dest.y, dest.z, 0.2, 287, 0, 0)
         _, hit, hitCoords, _, entityHit = GetShapeTestResult(rayAll)
     end
 
@@ -215,10 +215,10 @@ function PickPlacedPropUnderMouse(cam, customX, customY)
         return bestHandle, bestProp
     end
 
-    -- 3. Fallback : si un point d'impact sol/monde est détecté, prop le plus proche dans un rayon de 3.5m
+    -- 3. Fallback : si un point d'impact sol/monde est détecté, prop le plus proche dans un rayon de 0.8m
     if hit and hitCoords and hitCoords.x ~= 0.0 then
         local nearest = nil
-        local minDist = 3.5
+        local minDist = 0.8
         for i = 1, #allPlaced do
             local p = allPlaced[i]
             if p and p.handle and DoesEntityExist(p.handle) then
@@ -240,12 +240,23 @@ end
 
 local function gizmoLoop(entity)
     if not gizmoEnabled then
-        return LeaveCursorMode()
+        return
     end
 
-    EnterCursorMode()
+    -- Réamorcer le mode curseur interne de FiveM (Im3D) pour déclencher SetControlBypasses
+    for _ = 1, 20 do
+        EnterCursorMode()
+    end
     isCursorActive = true
     currentEntity = entity
+    currentMode = 'Translate'
+
+    CreateThread(function()
+        ExecuteCommand('+gizmoTranslation')
+        Wait(50)
+        ExecuteCommand('-gizmoTranslation')
+    end)
+    print('^2[YMAP BUILDER - DEBUG]^7 Gizmo 3D démarré | Mode Translation activé (+gizmoTranslation)')
 
     if currentEntity and DoesEntityExist(currentEntity) then
         SetEntityDrawOutline(currentEntity, true)
@@ -336,7 +347,22 @@ local function gizmoLoop(entity)
     end
     
     local wasLMBDown = false
-    local camFollowOffset = nil
+    local autoPanVelocity = vector3(0.0, 0.0, 0.0)
+
+    -- Fonction pour calculer l'accélération progressive aux extrémités de l'écran
+    local function calculateEdgeFactor(val, margin)
+        if not val then return 0.0 end
+        if val < margin then
+            local factor = (margin - val) / margin
+            if factor > 1.2 then factor = 1.2 end
+            return -(factor * factor) -- Négatif = vers la gauche ou le haut
+        elseif val > (1.0 - margin) then
+            local factor = (val - (1.0 - margin)) / margin
+            if factor > 1.2 then factor = 1.2 end
+            return (factor * factor)  -- Positif = vers la droite ou le bas
+        end
+        return 0.0
+    end
 
     while gizmoEnabled do
         Wait(0)
@@ -344,11 +370,6 @@ local function gizmoLoop(entity)
         -- Rotation caméra avec le clic droit
         local isHoldingRMB = IsDisabledControlPressed(0, 25) or IsControlPressed(0, 25)
         if isHoldingRMB then
-            if isCursorActive then
-                LeaveCursorMode()
-                isCursorActive = false
-            end
-            
             -- Désactiver les contrôles de vue du jeu pour capter le delta brut sans interférence
             DisableControlAction(0, 1, true)
             DisableControlAction(0, 2, true)
@@ -365,11 +386,8 @@ local function gizmoLoop(entity)
             
             SetCamRot(cam, camPitch, 0.0, camYaw, 2)
         else
-            if not isCursorActive then
-                EnterCursorMode()
-                isCursorActive = true
-            end
             SetMouseCursorActiveThisFrame()
+            SetMouseCursorSprite(1)
             EnableControlAction(0, 239, true)
             EnableControlAction(0, 240, true)
         end
@@ -382,8 +400,7 @@ local function gizmoLoop(entity)
                          or IsDisabledControlPressed(0, 51) or IsControlPressed(0, 51)
                          or IsDisabledControlPressed(0, 52) or IsControlPressed(0, 52)
 
-        local isLMBDown = isGizmoSelectPressed 
-                       or IsDisabledControlPressed(0, 24) or IsControlPressed(0, 24) 
+        local isLMBDown = IsDisabledControlPressed(0, 24) or IsControlPressed(0, 24) 
                        or IsDisabledControlPressed(0, 237) or IsControlPressed(0, 237)
                        or IsDisabledControlPressed(0, 142) or IsControlPressed(0, 142)
         local isLMBJustPressed = (isLMBDown and not wasLMBDown)
@@ -408,61 +425,6 @@ local function gizmoLoop(entity)
             if IsDisabledControlPressed(0, 52) or IsControlPressed(0, 52) then currentCamCoords = currentCamCoords - camUp * moveSpeed end
 
             SetCamCoord(cam, currentCamCoords.x, currentCamCoords.y, currentCamCoords.z)
-
-            -- Si on déplace la caméra manuellement pendant le drag d'un prop, mettre à jour l'offset de suivi
-            if isDragging and currentEntity and DoesEntityExist(currentEntity) then
-                camFollowOffset = currentCamCoords - GetEntityCoords(currentEntity)
-            end
-        end
-
-        -- Déplacement automatique de la caméra aux bords de l'écran (Edge Pan)
-        local isEdgePanning = false
-        if isCursorActive and not isHoldingRMB then
-            local curMouseX = GetControlNormal(0, 239)
-            if not curMouseX or curMouseX <= 0.0001 then curMouseX = GetDisabledControlNormal(0, 239) end
-            local curMouseY = GetControlNormal(0, 240)
-            if not curMouseY or curMouseY <= 0.0001 then curMouseY = GetDisabledControlNormal(0, 240) end
-
-            if curMouseX and curMouseY and not (curMouseX <= 0.0001 and curMouseY <= 0.0001) then
-                local edgeMargin = 0.06 -- Zone active : 6% du bord de l'écran
-                local edgePanX = 0.0
-                local edgePanY = 0.0
-
-                if curMouseX < edgeMargin then
-                    edgePanX = -math.min(1.0, (edgeMargin - curMouseX) / edgeMargin)
-                elseif curMouseX > (1.0 - edgeMargin) then
-                    edgePanX = math.min(1.0, (curMouseX - (1.0 - edgeMargin)) / edgeMargin)
-                end
-
-                if curMouseY < edgeMargin then
-                    edgePanY = math.min(1.0, (edgeMargin - curMouseY) / edgeMargin)
-                elseif curMouseY > (1.0 - edgeMargin) then
-                    edgePanY = -math.min(1.0, (curMouseY - (1.0 - edgeMargin)) / edgeMargin)
-                end
-
-                if edgePanX ~= 0.0 or edgePanY ~= 0.0 then
-                    isEdgePanning = true
-                    local panSpeed = (isHoldingShift and 0.40 or 0.20)
-
-                    local horizForward = vector3(camForward.x, camForward.y, 0.0)
-                    local hLen = #(horizForward)
-                    if hLen > 0.01 then
-                        horizForward = horizForward / hLen
-                    else
-                        local yawRad = math.rad(camYaw)
-                        horizForward = vector3(-math.sin(yawRad), math.cos(yawRad), 0.0)
-                    end
-
-                    local panVec = (camRight * (edgePanX * panSpeed)) + (horizForward * (edgePanY * panSpeed))
-                    local curCamCoords = GetCamCoord(cam)
-                    local nextCamCoords = curCamCoords + panVec
-                    SetCamCoord(cam, nextCamCoords.x, nextCamCoords.y, nextCamCoords.z)
-
-                    if isDragging and currentEntity and DoesEntityExist(currentEntity) then
-                        camFollowOffset = nextCamCoords - GetEntityCoords(currentEntity)
-                    end
-                end
-            end
         end
 
         -- Désactiver les actions conflictuelles
@@ -488,18 +450,16 @@ local function gizmoLoop(entity)
             SetPauseMenuActive(false)
             shouldReopenUI = false
             gizmoEnabled = false
+            print('^3[YMAP BUILDER - DEBUG]^7 Touche [ÉCHAP] pressée -> Fermeture complète de l\'éditeur')
             break
         end
 
-        -- Valider et Réouvrir direct l'UI des props (Touche ENTRÉE ou Controls 18 / 191 / 201 / 215)
-        if (IsDisabledControlJustPressed(0, 18) or IsControlJustPressed(0, 18)
-            or IsDisabledControlJustPressed(0, 191) or IsControlJustPressed(0, 191)
-            or IsDisabledControlJustPressed(0, 201) or IsControlJustPressed(0, 201)
-            or IsDisabledControlJustPressed(0, 215) or IsControlJustPressed(0, 215)
-            or isValidateTriggered) and (GetGameTimer() - gizmoActivationTime) > 300 then
+        -- Valider et Réouvrir direct l'UI des props (Touche ENTRÉE uniquement via keybind, jamais sur un clic souris)
+        if isValidateTriggered and (GetGameTimer() - gizmoActivationTime) > 300 then
             isValidateTriggered = false
             shouldReopenUI = true
             gizmoEnabled = false
+            print('^2[YMAP BUILDER - DEBUG]^7 Touche [ENTRÉE] pressée -> Validation du prop et réouverture du menu')
             break
         end
 
@@ -557,13 +517,13 @@ local function gizmoLoop(entity)
         if not isLMBDown and isDragging then
             isDragging = false
             hasDuplicatedThisDrag = false
-            camFollowOffset = nil
             if currentEntity and DoesEntityExist(currentEntity) then
                 dragStartCoords = GetEntityCoords(currentEntity)
                 dragStartRot = GetEntityRotation(currentEntity, 2)
                 if UpdatePlacedObjectTransform then
                     UpdatePlacedObjectTransform(currentEntity)
                 end
+                print(('^3[YMAP BUILDER - DEBUG]^7 Fin du déplacement | Nouvelles coordonnées : %.2f, %.2f, %.2f'):format(dragStartCoords.x, dragStartCoords.y, dragStartCoords.z))
             end
         end
 
@@ -582,7 +542,7 @@ local function gizmoLoop(entity)
                     hasDuplicatedThisDrag = false
                     dragStartCoords = prevCoords
                     dragStartRot = GetEntityRotation(currentEntity, 2)
-                    camFollowOffset = GetCamCoord(cam) - prevCoords
+                    print('^2[YMAP BUILDER - DEBUG]^7 Flèche Gizmo saisie -> Déplacement en direct du prop #' .. tostring(currentEntity))
                 end
 
                 if (isDuplicateKeyHeld and not hasDuplicatedThisDrag) or isDuplicateKeyJustPressed then
@@ -595,29 +555,54 @@ local function gizmoLoop(entity)
             end
         else
             isDragging = false
-            camFollowOffset = nil
         end
 
-        -- Suivi de caméra ultra-fluide avec LERP (supprime tout tremblement/à-coup)
-        if isDragging and currentEntity and DoesEntityExist(currentEntity) then
-            local entPos = GetEntityCoords(currentEntity)
-            if not camFollowOffset then
-                camFollowOffset = GetCamCoord(cam) - entPos
-            end
+        -- AUTO-PAN FLUIDE DE LA CAMÉRA QUAND LE PROP ARRIVE À L'EXTRÉMITÉ DE L'ÉCRAN
+        local targetPanVelocity = vector3(0.0, 0.0, 0.0)
+        if isDragging and currentEntity and DoesEntityExist(currentEntity) and not isMovingCam and not isHoldingRMB then
+            local propCoords = GetEntityCoords(currentEntity)
+            local onScreen, screenX, screenY = GetScreenCoordFromWorldCoord(propCoords.x, propCoords.y, propCoords.z)
+            
+            local camCoords = GetCamCoord(cam)
+            local toProp = propCoords - camCoords
+            local forwardDot = (toProp.x * camForward.x) + (toProp.y * camForward.y) + (toProp.z * camForward.z)
 
-            -- Si le joueur ne déplace pas la caméra manuellement (ZQSD), n'oriente pas la vue et n'est pas aux bords
-            if not isMovingCam and not isHoldingRMB and not isEdgePanning then
-                local targetCamPos = entPos + camFollowOffset
-                local curCamPos = GetCamCoord(cam)
-                local diff = targetCamPos - curCamPos
-                if #(diff) > 0.0005 then
-                    local smoothFactor = 0.22 -- Amortissement fluide 60fps
-                    local nextPos = curCamPos + (diff * smoothFactor)
-                    SetCamCoord(cam, nextPos.x, nextPos.y, nextPos.z)
+            local pFactorX, pFactorY = 0.0, 0.0
+            if forwardDot > 0 then
+                if onScreen then
+                    -- Zone d'extrémité pour le prop : 22% des bords
+                    pFactorX = calculateEdgeFactor(screenX, 0.22)
+                    pFactorY = calculateEdgeFactor(screenY, 0.22)
+                else
+                    -- Si le prop est sorti du champ visuel, pan dans sa direction
+                    local rightDot = (toProp.x * camRight.x) + (toProp.y * camRight.y) + (toProp.z * camRight.z)
+                    local upDot = (toProp.x * camUp.x) + (toProp.y * camUp.y) + (toProp.z * camUp.z)
+                    pFactorX = rightDot > 0 and 1.0 or -1.0
+                    pFactorY = upDot > 0 and -1.0 or 1.0
                 end
             end
+
+            -- Détecte également si le curseur de la souris atteint le bord pendant la manipulation
+            local mouseX = GetControlNormal(0, 239)
+            local mouseY = GetControlNormal(0, 240)
+            local mFactorX = calculateEdgeFactor(mouseX, 0.10)
+            local mFactorY = calculateEdgeFactor(mouseY, 0.10)
+
+            local moveFactorX = (math.abs(pFactorX) > math.abs(mFactorX)) and pFactorX or mFactorX
+            local moveFactorY = (math.abs(pFactorY) > math.abs(mFactorY)) and pFactorY or mFactorY
+
+            -- Vitesse de croisière maximale douce et lissage exponentiel (Lerp)
+            local edgePanSpeed = 0.22
+            targetPanVelocity = (camRight * moveFactorX - camUp * moveFactorY) * edgePanSpeed
+            autoPanVelocity = autoPanVelocity + (targetPanVelocity - autoPanVelocity) * 0.12
         else
-            camFollowOffset = nil
+            -- Amortissement doux et progressif à l'arrêt pour une fluidité parfaite sans à-coup
+            autoPanVelocity = autoPanVelocity * 0.80
+        end
+
+        if #(autoPanVelocity) > 0.0005 then
+            local curCam = GetCamCoord(cam)
+            SetCamCoord(cam, curCam.x + autoPanVelocity.x, curCam.y + autoPanVelocity.y, curCam.z + autoPanVelocity.z)
         end
 
         -- SÉLECTION D'UN AUTRE PROP PAR CLIC GAUCHE DANS LE MONDE
@@ -648,10 +633,8 @@ local function gizmoLoop(entity)
         end
     end
     
-    if isCursorActive then
-        LeaveCursorMode()
-    end
     isCursorActive = false
+    pcall(LeaveCursorMode)
 
     RenderScriptCams(false, true, 400, true, true)
     DestroyCam(cam, false)
@@ -703,7 +686,6 @@ local function textUILoop()
                     '[W] - Translation | [R] - Rotation | [Q] - Local/Monde  \n' ..
                     '[LALT] - Plaquer au sol  \n' ..
                     '[ZQSD / Clic Droit] - Déplacer Caméra  \n' ..
-                    '[Bords Écran] - Défilement Caméra (Edge Pan)  \n' ..
                     '[A / E] - Hauteur Caméra  \n' ..
                     '**[ÉCHAP]** - **Fermer l\'Éditeur**'
                 )
@@ -715,7 +697,6 @@ local function textUILoop()
                     '**[Clic Gauche]** - **Cliquer sur un prop pour le sélectionner & bouger**  \n' ..
                     '**[F]** - **Cibler un prop au viseur (Picker)**  \n' ..
                     '[ZQSD] - Déplacer la caméra  \n' ..
-                    '[Bords Écran] - Défilement Caméra (Edge Pan)  \n' ..
                     '[A / E] - Hauteur de la caméra  \n' ..
                     '[Clic Droit] - Orienter la vue  \n' ..
                     '**[ÉCHAP]** - **Fermer l\'Éditeur**'
@@ -736,6 +717,10 @@ function useGizmo(entity, modelName)
     gizmoActivationTime = GetGameTimer()
     currentEntity = entity
     currentModelName = modelName
+
+    -- Forcer la désactivation totale de NUI et libérer l'écran pour le Gizmo 3D
+    SetNuiFocus(false, false)
+    SendNUIMessage({ action = 'forceClose' })
 
     textUILoop()
     gizmoLoop(entity)
@@ -758,25 +743,32 @@ function PickPlacedPropAtCoords(cam, customX, customY)
     return PickPlacedPropUnderMouse(cam, customX, customY)
 end
 
--- Raccourcis clavier pour le Gizmo
+-- Keybinding natif du clic gauche pour la saisie et manipulation des flèches Gizmo (ImGuizmo)
+RegisterKeyMapping('+gizmoSelect', 'Sélectionner l\'axe Gizmo', 'MOUSE_BUTTON', 'MOUSE_LEFT')
+RegisterKeyMapping('+gizmoTranslation', 'Mode Translation Gizmo', 'keyboard', 'W')
+RegisterKeyMapping('+gizmoRotation', 'Mode Rotation Gizmo', 'keyboard', 'R')
+RegisterKeyMapping('+gizmoLocal', 'Basculer Espace Local/Monde', 'keyboard', 'Q')
+
 lib.addKeybind({
     name = '_ymapGizmoSelect',
     description = 'Sélectionner l\'axe Gizmo',
     defaultMapper = 'MOUSE_BUTTON',
     defaultKey = 'MOUSE_LEFT',
     onPressed = function()
-        if not gizmoEnabled then return end
-        isGizmoSelectPressed = true
-        ExecuteCommand('+gizmoSelect')
+        if gizmoEnabled then
+            ExecuteCommand('+gizmoSelect')
+        end
     end,
     onReleased = function()
-        isGizmoSelectPressed = false
-        ExecuteCommand('-gizmoSelect')
+        if gizmoEnabled then
+            ExecuteCommand('-gizmoSelect')
+        end
     end
 })
 
+-- Raccourcis ox_lib pour changer de mode de manipulation (Translation, Rotation, Espace Local/Monde)
 lib.addKeybind({
-    name = '_ymapGizmoTranslation',
+    name = '_ymapGizmoModeTrans',
     description = 'Mode Translation Gizmo',
     defaultKey = 'W',
     onPressed = function()
@@ -790,7 +782,7 @@ lib.addKeybind({
 })
 
 lib.addKeybind({
-    name = '_ymapGizmoRotation',
+    name = '_ymapGizmoModeRot',
     description = 'Mode Rotation Gizmo',
     defaultKey = 'R',
     onPressed = function()
@@ -804,7 +796,7 @@ lib.addKeybind({
 })
 
 lib.addKeybind({
-    name = '_ymapGizmoLocal',
+    name = '_ymapGizmoModeLocal',
     description = 'Basculer Espace Local/Monde',
     defaultKey = 'Q',
     onPressed = function()
@@ -821,6 +813,22 @@ lib.addKeybind({
     name = '_ymapGizmoClose',
     description = 'Valider et ouvrir le menu des props',
     defaultKey = 'RETURN',
+    onPressed = function()
+        if not gizmoEnabled then return end
+        if (GetGameTimer() - gizmoActivationTime) < 300 then return end
+        isValidateTriggered = true
+    end,
+    onReleased = function()
+        if not gizmoEnabled then return end
+        if (GetGameTimer() - gizmoActivationTime) < 300 then return end
+        isValidateTriggered = true
+    end
+})
+
+lib.addKeybind({
+    name = '_ymapGizmoCloseNumpad',
+    description = 'Valider et ouvrir le menu des props (Pavé Num)',
+    defaultKey = 'NUMPADENTER',
     onPressed = function()
         if not gizmoEnabled then return end
         if (GetGameTimer() - gizmoActivationTime) < 300 then return end

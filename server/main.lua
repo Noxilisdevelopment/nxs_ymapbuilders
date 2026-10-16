@@ -58,6 +58,18 @@ local function openBuilder(source)
     TriggerClientEvent('nxs_ymapbuilder:client:openUI', source)
 end
 
+-- Autorisation globale des commandes Gizmo C++ de FiveM pour éviter tout refus de permission ACE
+CreateThread(function()
+    ExecuteCommand('add_ace builtin.everyone command.+gizmoSelect allow')
+    ExecuteCommand('add_ace builtin.everyone command.-gizmoSelect allow')
+    ExecuteCommand('add_ace builtin.everyone command.+gizmoTranslation allow')
+    ExecuteCommand('add_ace builtin.everyone command.-gizmoTranslation allow')
+    ExecuteCommand('add_ace builtin.everyone command.+gizmoRotation allow')
+    ExecuteCommand('add_ace builtin.everyone command.-gizmoRotation allow')
+    ExecuteCommand('add_ace builtin.everyone command.+gizmoLocal allow')
+    ExecuteCommand('add_ace builtin.everyone command.-gizmoLocal allow')
+end)
+
 RegisterCommand(Config.Command, function(source, args)
     if args and (args[1] == 'exit' or args[1] == 'off' or args[1] == 'stop') then
         TriggerClientEvent('nxs_ymapbuilder:client:toggleBuilderMode', source, false)

@@ -262,7 +262,7 @@ CreateThread(function()
     end
 end)
 
--- Ouverture de l'UI
+-- Ouverture et Fermeture de l'UI
 function openMainUI()
     isUIOpen = true
     SetNuiFocus(true, true)
@@ -271,6 +271,13 @@ function openMainUI()
         categories = Config.Categories,
         placedEntities = getUIPlacedEntities()
     })
+end
+
+function closeMainUI()
+    isUIOpen = false
+    SetNuiFocus(false, false)
+    highlightedEntity = nil
+    SendNUIMessage({ action = 'forceClose' })
 end
 
 RegisterNetEvent('nxs_ymapbuilder:client:openUI', function()
@@ -306,9 +313,7 @@ end)
 
 -- Spawn direct et manipulation au Gizmo 3D (avec les flèches X, Y, Z)
 local function spawnAndGizmoProp(modelName, initialRot)
-    isUIOpen = false
-    SetNuiFocus(false, false)
-    highlightedEntity = nil
+    closeMainUI()
 
     local modelHash = type(modelName) == 'number' and modelName or joaat(modelName)
 
@@ -389,9 +394,7 @@ end
 
 -- Callbacks NUI
 RegisterNUICallback('closeUI', function(_, cb)
-    isUIOpen = false
-    SetNuiFocus(false, false)
-    highlightedEntity = nil
+    closeMainUI()
     cb('ok')
 end)
 
@@ -442,9 +445,7 @@ RegisterNUICallback('editPropGizmo', function(data, cb)
         return
     end
 
-    isUIOpen = false
-    SetNuiFocus(false, false)
-    highlightedEntity = nil
+    closeMainUI()
 
     CreateThread(function()
         exports.nxs_ymapbuilder:useGizmo(entData.handle, entData.model)

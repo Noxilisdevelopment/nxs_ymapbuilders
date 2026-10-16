@@ -46,6 +46,7 @@ body {
     overflow: hidden;
     position: relative;
     color: var(--text-primary);
+    pointer-events: none !important;
 }
 
 input, button, select, textarea {
@@ -64,6 +65,7 @@ strong {
 
 .hidden {
     display: none !important;
+    pointer-events: none !important;
 }
 
 /* Conteneur principal */
@@ -83,7 +85,7 @@ strong {
     flex: 1;
     height: 100%;
     pointer-events: auto;
-    cursor: crosshair;
+    cursor: default;
 }
 
 /* Sidebar droite épurée */
