@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YMAP Builder Pro</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div id="app" class="hidden">
+        <!-- Zone de clic transparent dans le monde 3D pour sélectionner les props posés -->
+        <div id="worldBackdrop" class="world-backdrop" title="Cliquez sur un prop dans le monde pour le sélectionner et le manipuler"></div>
+        <div class="modal-container">
+            <!-- Header -->
+            <!-- Header -->
+            <header class="modal-header">
+                <div class="brand">
+                    <div class="brand-icon"><i class="fa-solid fa-cube"></i></div>
+                    <div>
+                        <h1>YMAP <span>BUILDER</span></h1>
+                        <p class="subtitle">Mapping & CodeWalker Export</p>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button id="undoBtn" class="icon-btn" title="Annuler (Ctrl+Z)"><i class="fa-solid fa-rotate-left"></i></button>
+                    <button id="redoBtn" class="icon-btn" title="Rétablir (Ctrl+Y)"><i class="fa-solid fa-rotate-right"></i></button>
+                    <div class="prop-count-badge">
+                        <span id="placedCount">0</span> props
+                    </div>
+                    <button id="closeBtn" class="icon-btn" title="Fermer le panel (Échap)"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </header>
+
+            <!-- Navigation Onglets -->
+            <nav class="nav-tabs">
+                <button class="tab-btn active" data-tab="catalog">
+                    <i class="fa-solid fa-layer-group"></i>
+                    <span>Catalogue</span>
+                </button>
+                <button class="tab-btn" data-tab="placed">
+                    <i class="fa-solid fa-list"></i>
+                    <span>Posés (<span id="placedCountTab">0</span>)</span>
+                </button>
+                <button class="tab-btn" data-tab="export">
+                    <i class="fa-solid fa-arrow-up-from-bracket"></i>
+                    <span>Exporter</span>
+                </button>
+                <button class="tab-btn" data-tab="projects">
+                    <i class="fa-solid fa-folder-open"></i>
+                    <span>Projets</span>
+                </button>
+            </nav>
+
+            <!-- Contenu des Onglets -->
+            <main class="modal-body">
+                <!-- Onglet 1 : Catalogue de Props -->
+                <section id="tab-catalog" class="tab-content active">
+                    <!-- Barre de recherche -->
+                    <div class="search-bar-row">
+                        <div class="search-input-wrapper">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="propSearch" placeholder="Rechercher un prop..." autocomplete="off">
+                            <button id="clearSearch" class="clear-btn hidden"><i class="fa-solid fa-xmark"></i></button>
+                        </div>
+                    </div>
+
+                    <!-- Modèle personnalisé -->
+                    <div class="custom-prop-box">
+                        <span class="custom-title"><i class="fa-solid fa-cube"></i> Prop personnalisé</span>
+                        <div class="custom-input-group">
+                            <input type="text" id="customPropInput" placeholder="ex: prop_table_03" autocomplete="off">
+                            <button id="spawnCustomBtn" class="btn btn-primary"><i class="fa-solid fa-plus"></i> Poser</button>
+                        </div>
+                    </div>
+
+                    <!-- Sélecteur de catégories -->
+                    <div class="categories-bar" id="categoriesBar">
+                        <!-- Généré en JS -->
+                    </div>
+
+                    <!-- Grille des Props -->
+                    <div class="props-grid-container">
+                        <div class="props-grid" id="propsGrid">
+                            <!-- Généré dynamiquement -->
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Onglet 2 : Objets Placés -->
+                <section id="tab-placed" class="tab-content">
+                    <div class="placed-top-bar">
+                        <span class="section-desc">Gérez, ajustez au millimètre avec le <strong>Gizmo 3D</strong> ou dupliquez les éléments déjà posés.</span>
+                        <button id="clearAllBtn" class="btn btn-danger-outline"><i class="fa-solid fa-trash-can"></i> Tout effacer</button>
+                    </div>
+
+                    <div class="placed-list" id="placedList">
+                        <!-- Généré dynamiquement -->
+                    </div>
+                </section>
+
+                <!-- Onglet 3 : Exporter YMAP -->
+                <section id="tab-export" class="tab-content">
+                    <div class="export-container">
+                        <div class="export-form">
+                            <div class="form-group">
+                                <label for="mapNameInput"><i class="fa-solid fa-tag"></i> Nom du mapping (fichier YMAP)</label>
+                                <div class="input-with-hint">
+                                    <input type="text" id="mapNameInput" placeholder="ex: mapping_paleto_chantier" value="mon_super_mapping">
+                                    <span class="file-extension">.ymap.xml</span>
+                                </div>
+                                <small>Le fichier sera directement sauvegardé dans le dossier <code>nxs_ymapbuilder/exports/</code> sur votre serveur.</small>
+                            </div>
+
+                            <div class="export-actions">
+                                <button id="generateYmapBtn" class="btn btn-success"><i class="fa-solid fa-file-code"></i> Générer le YMAP (.xml)</button>
+                                <button id="copyXmlBtn" class="btn btn-secondary hidden"><i class="fa-solid fa-copy"></i> Copier le code XML</button>
+                            </div>
+                        </div>
+
+                        <!-- Aperçu du code XML généré -->
+                        <div class="code-preview-section">
+                            <div class="preview-header">
+                                <span><i class="fa-solid fa-code"></i> Aperçu du fichier <strong>ymap.xml</strong></span>
+                                <span id="xmlStatusBadge" class="badge">Prêt pour CodeWalker / OpenIV</span>
+                            </div>
+                            <pre><code id="xmlPreview">// Cliquez sur "Générer le YMAP" pour prévisualiser le fichier XML complet...</code></pre>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Onglet 4 : Gestionnaire de Projets -->
+                <section id="tab-projects" class="tab-content">
+                    <div class="placed-top-bar">
+                        <span class="section-desc">Gérez vos mappings enregistrés, rechargez-les en un clic ou supprimez vos sauvegardes.</span>
+                        <button id="refreshProjectsBtn" class="icon-btn" title="Actualiser la liste"><i class="fa-solid fa-arrows-rotate"></i></button>
+                    </div>
+
+                    <div class="projects-list" id="projectsList">
+                        <!-- Généré dynamiquement -->
+                    </div>
+                </section>
+            </main>
+
+            <!-- Conteneur de Notifications Toast internes -->
+            <div id="toastContainer" class="toast-container"></div>
+
+            <!-- Modale de Confirmation interne -->
+            <div id="confirmModal" class="confirm-overlay hidden">
+                <div class="confirm-box">
+                    <div class="confirm-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                    <h3 id="confirmTitle">Confirmation</h3>
+                    <p id="confirmDesc">Voulez-vous vraiment effectuer cette action ?</p>
+                    <div class="confirm-actions">
+                        <button id="confirmCancelBtn" class="btn btn-secondary">Annuler</button>
+                        <button id="confirmOkBtn" class="btn btn-danger-solid">Confirmer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
