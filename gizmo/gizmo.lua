@@ -12,11 +12,15 @@ local currentModelName = nil
 local currentCam = nil
 local isGizmoSelectPressed = false
 local gizmoCancelled = false
+local gizmoConfirmed = false
 local isDeleteTriggered = false
 local isCancelTriggered = false
-local isValidateTriggered = false
-local shouldReopenUI = false
+local isEnterTriggered = false
+local isAltPressed = false
+local isRMBPressed = false
 local gizmoActivationTime = 0
+local isFreecamMode = false
+local camMoveSpeed = 0.15
 
 local isSnapEnabled = Config.Snap and Config.Snap.DefaultEnabled or false
 local snapTransStep = Config.Snap and Config.Snap.TranslationStep or 0.5
@@ -34,11 +38,12 @@ local function normalize(x, y, z)
     return x / length, y / length, z / length
 end
 
+local sharedMatrixBuffer = dataview.ArrayBuffer(60)
+
 local function makeEntityMatrix(entity)
     local f, r, u, a = GetEntityMatrix(entity)
-    local view = dataview.ArrayBuffer(60)
 
-    view:SetFloat32(0, r[1])
+    sharedMatrixBuffer:SetFloat32(0, r[1])
         :SetFloat32(4, r[2])
         :SetFloat32(8, r[3])
         :SetFloat32(12, 0)
@@ -55,7 +60,7 @@ local function makeEntityMatrix(entity)
         :SetFloat32(56, a[3])
         :SetFloat32(60, 1)
 
-    return view
+    return sharedMatrixBuffer
 end
 
 local function applyEntityMatrix(entity, view)
@@ -80,7 +85,6 @@ local function applyEntityMatrix(entity, view)
         x3, y3, z3,
         tx, ty, tz
     )
-    SetEntityCoordsNoOffset(entity, tx, ty, tz, false, false, false)
 
     if isSnapEnabled and currentMode == 'Rotate' then
         local r = GetEntityRotation(entity, 2)
@@ -89,136 +93,78 @@ local function applyEntityMatrix(entity, view)
 end
 
 local function GetCamDirections(cam)
-    local rot = (cam and DoesCamExist(cam)) and GetCamRot(cam, 2) or GetGameplayCamRot(2)
+    local rot = GetCamRot(cam, 2)
     local tX = math.rad(rot.x)
     local tZ = math.rad(rot.z)
-    local cosX = math.abs(math.cos(tX))
+    local num = math.abs(math.cos(tX))
     
-    local forward = vector3(-math.sin(tZ) * cosX, math.cos(tZ) * cosX, math.sin(tX))
+    local forward = vector3(-math.sin(tZ) * num, math.cos(tZ) * num, math.sin(tX))
     local right = vector3(math.cos(tZ), math.sin(tZ), 0.0)
-    -- Produit vectoriel exact right x forward pour un vecteur Up orthonormal parfait
-    local up = vector3(math.sin(tZ) * math.sin(tX), -math.cos(tZ) * math.sin(tX), cosX)
+    local up = vector3(0.0, 0.0, 1.0)
     
     return forward, right, up
 end
 
-local function GetCursorRay(cam, customX, customY)
-    local mouseX = customX
-    local mouseY = customY
+local function RaycastForProp(cam)
+    local camCoords = GetCamCoord(cam)
+    local mouseX = GetControlNormal(0, 239)
+    local mouseY = GetControlNormal(0, 240)
+    local camForward, camRight, camUp = GetCamDirections(cam)
+    local dir = camForward
 
-    if not mouseX or not mouseY then
-        EnableControlAction(0, 239, true)
-        EnableControlAction(0, 240, true)
-
-        mouseX = GetControlNormal(0, 239)
-        if not mouseX or mouseX <= 0.0001 then
-            mouseX = GetDisabledControlNormal(0, 239)
-        end
-        mouseY = GetControlNormal(0, 240)
-        if not mouseY or mouseY <= 0.0001 then
-            mouseY = GetDisabledControlNormal(0, 240)
-        end
-    end
-
-    if not mouseX or mouseX <= 0.0001 then mouseX = 0.5 end
-    if not mouseY or mouseY <= 0.0001 then mouseY = 0.5 end
-
-    -- Utilisation de la native officielle de GTA V pour projeter le pixel écran en 3D
-    local worldCoord, normalDir = GetWorldCoordFromScreenCoord(mouseX, mouseY)
-
-    if not worldCoord or not normalDir or #(normalDir) == 0.0 then
-        local camCoords = (cam and DoesCamExist(cam)) and GetCamCoord(cam) or GetGameplayCamCoord()
-        local camForward, camRight, camUp = GetCamDirections(cam)
-        local fov = (cam and DoesCamExist(cam)) and GetCamFov(cam) or GetGameplayCamFov()
+    if mouseX and mouseY and (mouseX > 0.01 or mouseY > 0.01) then
+        local fov = GetCamFov(cam)
         local aspect = GetAspectRatio(true)
-        local tanFov = math.tan(math.rad(fov) / 2)
+        local radFov = math.rad(fov)
+        local tanFov = math.tan(radFov / 2)
 
         local screenX = (mouseX - 0.5) * 2.0
         local screenY = (mouseY - 0.5) * 2.0
 
-        local rawDir = camForward + (camRight * (screenX * tanFov * aspect)) + (camUp * (-screenY * tanFov))
+        local rightVec = camRight * (screenX * tanFov * aspect)
+        local upVec = camUp * (-screenY * tanFov)
+        local rawDir = camForward + rightVec + upVec
         local len = #(rawDir)
-        normalDir = len > 0 and (rawDir / len) or camForward
-        worldCoord = camCoords
+        if len > 0 then
+            dir = rawDir / len
+        end
     end
 
-    return worldCoord, normalDir
-end
-
-function PickPlacedPropUnderMouse(cam, customX, customY)
-    local rayOrigin, rayDir = GetCursorRay(cam, customX, customY)
-    local allPlaced = GetPlacedObjects and GetPlacedObjects() or (placedObjects or {})
-    if not allPlaced or #allPlaced == 0 then return nil, nil end
-
-    -- 1. Test physique direct StartShapeTestSweptSphere (flag 16 pour objets, puis 287 pour toutes entités)
-    local dest = rayOrigin + (rayDir * 120.0)
-    local ray = StartShapeTestSweptSphere(rayOrigin.x, rayOrigin.y, rayOrigin.z, dest.x, dest.y, dest.z, 0.15, 16, 0, 0)
+    local dest = camCoords + (dir * 120.0)
+    local ray = StartShapeTestRay(camCoords.x, camCoords.y, camCoords.z, dest.x, dest.y, dest.z, 16, currentEntity or 0, 0)
     local _, hit, hitCoords, _, entityHit = GetShapeTestResult(ray)
 
-    if not hit or entityHit == 0 or not DoesEntityExist(entityHit) then
-        local rayAll = StartShapeTestSweptSphere(rayOrigin.x, rayOrigin.y, rayOrigin.z, dest.x, dest.y, dest.z, 0.2, 287, 0, 0)
-        _, hit, hitCoords, _, entityHit = GetShapeTestResult(rayAll)
-    end
-
     if hit and entityHit ~= 0 and DoesEntityExist(entityHit) then
+        return entityHit, hitCoords
+    end
+
+    local rayWorld = StartShapeTestRay(camCoords.x, camCoords.y, camCoords.z, dest.x, dest.y, dest.z, 1 + 16, currentEntity or 0, 0)
+    local _, hitW, hitCoordsW, _, entityHitW = GetShapeTestResult(rayWorld)
+
+    if hitW and entityHitW ~= 0 and DoesEntityExist(entityHitW) then
+        return entityHitW, hitCoordsW
+    end
+
+    return nil, (hitW and hitCoordsW or hitCoords)
+end
+
+local function PickPlacedPropUnderMouse(cam)
+    local hitEnt, hitCoords = RaycastForProp(cam)
+    local allPlaced = GetPlacedObjects and GetPlacedObjects() or (placedObjects or {})
+
+    -- 1. Si hitEnt direct : vérifier UNIQUEMENT si c'est l'un de nos props posés
+    if hitEnt and DoesEntityExist(hitEnt) then
         for i = 1, #allPlaced do
-            if allPlaced[i] and allPlaced[i].handle == entityHit then
-                return entityHit, allPlaced[i]
+            if allPlaced[i] and allPlaced[i].handle == hitEnt then
+                return hitEnt, allPlaced[i]
             end
         end
     end
 
-    -- 2. Test géométrique 3D précis : intersection rayon - volume englobant de tous nos props posés
-    local bestProp = nil
-    local bestHandle = nil
-    local minHitT = math.huge
-    local minRayDist = math.huge
-
-    for i = 1, #allPlaced do
-        local p = allPlaced[i]
-        if p and p.handle and DoesEntityExist(p.handle) then
-            local pCoords = GetEntityCoords(p.handle)
-            local model = GetEntityModel(p.handle)
-            local minDim, maxDim = GetModelDimensions(model)
-            
-            -- Centre du volume englobant du prop
-            local center = pCoords + ((minDim + maxDim) * 0.5)
-            -- Rayon englobant avec marge généreuse pour faciliter le clic à la souris
-            local propRadius = math.max(0.65, (#(maxDim - minDim) * 0.5) * 1.3)
-
-            local v = center - rayOrigin
-            local t = (v.x * rayDir.x) + (v.y * rayDir.y) + (v.z * rayDir.z)
-
-            if t > 0.1 and t < 120.0 then
-                local closestPointOnRay = rayOrigin + (rayDir * t)
-                local distToRay = #(center - closestPointOnRay)
-
-                -- Le rayon traverse la boîte/sphère englobante du prop
-                if distToRay <= propRadius then
-                    if t < minHitT then
-                        minHitT = t
-                        bestProp = p
-                        bestHandle = p.handle
-                    end
-                elseif distToRay < minRayDist and minHitT == math.huge then
-                    minRayDist = distToRay
-                    if distToRay < 1.3 then
-                        bestProp = p
-                        bestHandle = p.handle
-                    end
-                end
-            end
-        end
-    end
-
-    if bestHandle then
-        return bestHandle, bestProp
-    end
-
-    -- 3. Fallback : si un point d'impact sol/monde est détecté, prop le plus proche dans un rayon de 0.8m
-    if hit and hitCoords and hitCoords.x ~= 0.0 then
+    -- 2. Si hitCoords, trouver le prop posé le plus proche dans un rayon de 2.5m
+    if hitCoords and hitCoords.x ~= 0.0 then
         local nearest = nil
-        local minDist = 0.8
+        local minDist = 2.5
         for i = 1, #allPlaced do
             local p = allPlaced[i]
             if p and p.handle and DoesEntityExist(p.handle) then
@@ -240,23 +186,12 @@ end
 
 local function gizmoLoop(entity)
     if not gizmoEnabled then
-        return
+        return LeaveCursorMode()
     end
 
-    -- Mode curseur interne de FiveM (Im3D) pour la saisie des axes
-    if not isCursorActive then
-        EnterCursorMode()
-        isCursorActive = true
-    end
+    EnterCursorMode()
+    isCursorActive = true
     currentEntity = entity
-    currentMode = 'Translate'
-
-    CreateThread(function()
-        ExecuteCommand('+gizmoTranslation')
-        Wait(50)
-        ExecuteCommand('-gizmoTranslation')
-    end)
-    print('^2[YMAP BUILDER - DEBUG]^7 Gizmo 3D démarré | Mode Translation activé (+gizmoTranslation)')
 
     if currentEntity and DoesEntityExist(currentEntity) then
         SetEntityDrawOutline(currentEntity, true)
@@ -266,6 +201,7 @@ local function gizmoLoop(entity)
     local playerPed = PlayerPedId()
     FreezeEntityPosition(playerPed, true)
     SetEntityVisible(playerPed, false, false)
+    SetEntityCollision(playerPed, false, false)
 
     local cam = CreateCam("DEFAULT_SCRIPTED_CAMERA", true)
     currentCam = cam
@@ -287,12 +223,11 @@ local function gizmoLoop(entity)
     SetCamActive(cam, true)
     RenderScriptCams(true, true, 400, true, true)
 
-    local camYaw = pRot.z
-    local camPitch = -14.0
-    local targetCamYaw = camYaw
-    local targetCamPitch = camPitch
-    local camVelocity = vector3(0.0, 0.0, 0.0)
-    local camBaseSpeed = 0.18
+    local initRot = GetCamRot(cam, 2)
+    local camYaw = initRot.z
+    local camPitch = initRot.x
+    local rmbLastX = nil
+    local rmbLastY = nil
 
     local dragStartCoords = currentEntity and GetEntityCoords(currentEntity) or nil
     local dragStartRot = currentEntity and GetEntityRotation(currentEntity, 2) or nil
@@ -337,7 +272,7 @@ local function gizmoLoop(entity)
         PlaySoundFrontend(-1, "SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
         lib.notify({
             title = 'YMAP Builder',
-            description = 'Prop dupliqué avec MAJ !',
+            description = 'Prop dupliqué avec ALT !',
             type = 'success'
         })
 
@@ -350,103 +285,30 @@ local function gizmoLoop(entity)
         end)
     end
     
-    local wasLMBDown = false
-
-    -- Fonction pour calculer l'accélération progressive aux extrémités de l'écran
-    local function calculateEdgeFactor(val, margin)
-        if not val then return 0.0 end
-        if val < margin then
-            local factor = (margin - val) / margin
-            if factor > 1.2 then factor = 1.2 end
-            return -(factor * factor) -- Négatif = vers la gauche ou le haut
-        elseif val > (1.0 - margin) then
-            local factor = (val - (1.0 - margin)) / margin
-            if factor > 1.2 then factor = 1.2 end
-            return (factor * factor)  -- Positif = vers la droite ou le bas
-        end
-        return 0.0
-    end
-
     while gizmoEnabled do
         Wait(0)
-        
-        -- Réglage dynamique de la vitesse de caméra via la molette de la souris (CodeWalker)
-        if IsDisabledControlJustPressed(0, 241) or IsControlJustPressed(0, 241) or IsDisabledControlJustPressed(0, 14) or IsControlJustPressed(0, 14) then
-            camBaseSpeed = math.min(1.5, camBaseSpeed + 0.03)
-        elseif IsDisabledControlJustPressed(0, 242) or IsControlJustPressed(0, 242) or IsDisabledControlJustPressed(0, 15) or IsControlJustPressed(0, 15) then
-            camBaseSpeed = math.max(0.03, camBaseSpeed - 0.03)
-        end
 
-        -- Rotation caméra fluide avec le clic droit (CodeWalker look around avec lissage)
-        local isHoldingRMB = IsDisabledControlPressed(0, 25) or IsControlPressed(0, 25)
-        if isHoldingRMB then
-            DisableControlAction(0, 1, true)
-            DisableControlAction(0, 2, true)
+        -- Mettre à jour le focus de streaming GTA V sur la caméra sans déplacer le ped
+        local currentCamCoords = GetCamCoord(cam)
+        SetFocusPosAndVel(currentCamCoords.x, currentCamCoords.y, currentCamCoords.z, 0.0, 0.0, 0.0)
 
-            local mouseX = GetDisabledControlNormal(0, 1)
-            if mouseX == 0.0 then mouseX = GetControlNormal(0, 1) end
-            local mouseY = GetDisabledControlNormal(0, 2)
-            if mouseY == 0.0 then mouseY = GetControlNormal(0, 2) end
-
-            targetCamYaw = targetCamYaw - (mouseX * 7.5)
-            targetCamPitch = targetCamPitch - (mouseY * 7.5)
-            if targetCamPitch > 85.0 then targetCamPitch = 85.0 end
-            if targetCamPitch < -85.0 then targetCamPitch = -85.0 end
-            
-            -- Interpolation soyeuse de l'orientation
-            camYaw = camYaw + (targetCamYaw - camYaw) * 0.40
-            camPitch = camPitch + (targetCamPitch - camPitch) * 0.40
-            SetCamRot(cam, camPitch, 0.0, camYaw, 2)
-        else
-            SetMouseCursorActiveThisFrame()
-            SetMouseCursorSprite(1)
-            EnableControlAction(0, 239, true)
-            EnableControlAction(0, 240, true)
-            targetCamYaw = camYaw
-            targetCamPitch = camPitch
-        end
-
-        local isLMBDown = IsDisabledControlPressed(0, 24) or IsControlPressed(0, 24) 
-                       or IsDisabledControlPressed(0, 237) or IsControlPressed(0, 237)
-                       or IsDisabledControlPressed(0, 142) or IsControlPressed(0, 142)
-        local isLMBJustPressed = (isLMBDown and not wasLMBDown)
-                              or IsDisabledControlJustPressed(0, 24) or IsControlJustPressed(0, 24) 
-                              or IsDisabledControlJustPressed(0, 237) or IsControlJustPressed(0, 237)
-                              or IsDisabledControlJustPressed(0, 142) or IsControlJustPressed(0, 142)
-        wasLMBDown = isLMBDown
-        local isHoldingShift = IsDisabledControlPressed(0, 21) or IsControlPressed(0, 21)
-        local isShiftJustPressed = IsDisabledControlJustPressed(0, 21) or IsControlJustPressed(0, 21)
-
-        -- Vélocité cible des contrôles clavier (ZQSD / WASD / Espace / Ctrl / A / E)
-        local currentMoveSpeed = isHoldingShift and (camBaseSpeed * 2.5) or camBaseSpeed
-        local camForward, camRight, camUp = GetCamDirections(cam)
-
-        local moveInput = vector3(0.0, 0.0, 0.0)
-        -- Z (Avance) / S (Recule)
-        if IsDisabledControlPressed(0, 32) or IsControlPressed(0, 32) then moveInput = moveInput + camForward end
-        if IsDisabledControlPressed(0, 33) or IsControlPressed(0, 33) then moveInput = moveInput - camForward end
-        -- Q/A (Gauche) / D (Droite)
-        if IsDisabledControlPressed(0, 34) or IsControlPressed(0, 34) then moveInput = moveInput - camRight end
-        if IsDisabledControlPressed(0, 35) or IsControlPressed(0, 35) then moveInput = moveInput + camRight end
-        -- E ou Espace (Monte verticalement dans le monde)
-        if IsDisabledControlPressed(0, 51) or IsControlPressed(0, 51) or IsDisabledControlPressed(0, 22) or IsControlPressed(0, 22) then
-            moveInput = moveInput + vector3(0.0, 0.0, 1.0)
-        end
-        -- A ou Ctrl (Descend verticalement dans le monde)
-        if IsDisabledControlPressed(0, 52) or IsControlPressed(0, 52) or IsDisabledControlPressed(0, 36) or IsControlPressed(0, 36) then
-            moveInput = moveInput - vector3(0.0, 0.0, 1.0)
-        end
-
-        local inputLen = #(moveInput)
-        if inputLen > 0.001 then
-            moveInput = moveInput / inputLen
-        end
-        local targetInputVelocity = moveInput * currentMoveSpeed
-
-        -- Désactiver les actions conflictuelles
+        -- Désactiver les actions conflictuelles dès le début de chaque frame
+        DisableControlAction(0, 1, true)   -- Look LR
+        DisableControlAction(0, 2, true)   -- Look UD
         DisableControlAction(0, 21, true)  -- LSHIFT
-        DisableControlAction(0, 24, true)  -- Attack / LMB
-        DisableControlAction(0, 25, true)  -- Aim / RMB
+        DisableControlAction(0, 22, true)  -- SPACE (Jump)
+        DisableControlAction(0, 24, true)  -- Attack (LMB)
+        DisableControlAction(0, 25, true)  -- Aim (RMB)
+        DisableControlAction(2, 25, true)  -- Aim Frontend (RMB)
+        DisableControlAction(0, 26, true)  -- Look Behind
+        DisableControlAction(0, 68, true)  -- Veh Aim (RMB)
+        DisableControlAction(0, 70, true)  -- Veh Attack (RMB)
+        DisableControlAction(0, 238, true) -- Cursor Cancel (RMB)
+        DisableControlAction(2, 238, true) -- Cursor Cancel Frontend (RMB)
+        DisableControlAction(0, 172, true) -- Flèche Haut
+        DisableControlAction(0, 173, true) -- Flèche Bas
+        DisableControlAction(0, 174, true) -- Flèche Gauche
+        DisableControlAction(0, 175, true) -- Flèche Droite
         DisableControlAction(0, 140, true) -- Melee
         DisableControlAction(0, 30, true)
         DisableControlAction(0, 31, true)
@@ -454,80 +316,215 @@ local function gizmoLoop(entity)
         DisableControlAction(0, 33, true)
         DisableControlAction(0, 34, true)
         DisableControlAction(0, 35, true)
+        DisableControlAction(0, 19, true)  -- LALT
         DisableControlAction(0, 36, true)  -- LCTRL
         DisableControlAction(0, 29, true)  -- B
         DisableControlAction(0, 200, true) -- ESCAPE
         DisableControlAction(0, 199, true) -- Pause alternate
+        DisableControlAction(0, 177, true) -- Backspace
         DisableControlAction(0, 178, true) -- Delete
         DisablePlayerFiring(playerPed, true)
 
-        -- Quitter l'Éditeur / Caméra libre (Touche ÉCHAP)
+        -- Touche ESPACE : Basculer entre Caméra Libre (Freecam) et Mode Gizmo (Curseur)
+        if (IsDisabledControlJustPressed(0, 22) or IsControlJustPressed(0, 22)) and (GetGameTimer() - gizmoActivationTime) > 200 then
+            isFreecamMode = not isFreecamMode
+            if isFreecamMode then
+                if isCursorActive then
+                    LeaveCursorMode()
+                    isCursorActive = false
+                end
+                PlaySoundFrontend(-1, "SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
+            else
+                if not isCursorActive then
+                    EnterCursorMode()
+                    isCursorActive = true
+                end
+                PlaySoundFrontend(-1, "CANCEL", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
+            end
+        end
+
+        -- Détection clic gauche (manipulation / sélection de prop)
+        local isLMBDown = isGizmoSelectPressed or
+                          IsDisabledControlPressed(0, 24) or IsControlPressed(0, 24) or
+                          IsDisabledControlPressed(0, 237) or IsControlPressed(0, 237) or
+                          IsDisabledControlPressed(2, 237) or IsControlPressed(2, 237)
+        local isLMBJustPressed = IsDisabledControlJustPressed(0, 24) or IsControlJustPressed(0, 24) or
+                                 IsDisabledControlJustPressed(0, 237) or IsControlJustPressed(0, 237) or
+                                 IsDisabledControlJustPressed(2, 237) or IsControlJustPressed(2, 237)
+        local isHoldingShift = IsDisabledControlPressed(0, 21) or IsControlPressed(0, 21)
+        local isShiftJustPressed = IsDisabledControlJustPressed(0, 21) or IsControlJustPressed(0, 21)
+
+        -- Rotation caméra avec le clic droit (RMB / INPUT_AIM / INPUT_CURSOR_CANCEL)
+        local isHoldingRMB = not isLMBDown and (
+            isRMBPressed or
+            IsDisabledControlPressed(0, 25) or IsControlPressed(0, 25) or
+            IsDisabledControlPressed(2, 25) or IsControlPressed(2, 25) or
+            IsDisabledControlPressed(0, 238) or IsControlPressed(0, 238) or
+            IsDisabledControlPressed(2, 238) or IsControlPressed(2, 238)
+        )
+
+        -- Activer la vue libre soit en Mode Freecam soit par maintien du Clic Droit
+        local isInFreeLook = isFreecamMode or isHoldingRMB
+
+        if isInFreeLook then
+            if isCursorActive then
+                LeaveCursorMode()
+                isCursorActive = false
+            end
+
+            -- Molette de la souris : Ajuster la vitesse de vol de la Freecam
+            if IsDisabledControlJustPressed(0, 241) or IsControlJustPressed(0, 241) or IsDisabledControlJustPressed(0, 15) then
+                camMoveSpeed = math.min(2.0, camMoveSpeed + 0.04)
+            elseif IsDisabledControlJustPressed(0, 242) or IsControlJustPressed(0, 242) or IsDisabledControlJustPressed(0, 16) then
+                camMoveSpeed = math.max(0.02, camMoveSpeed - 0.04)
+            end
+
+            -- 1. Rotation de la caméra à la souris (Look LR / UD)
+            local lookX = GetDisabledControlNormal(0, 1)
+            local lookY = GetDisabledControlNormal(0, 2)
+            if lookX == 0.0 then lookX = GetControlNormal(0, 1) end
+            if lookY == 0.0 then lookY = GetControlNormal(0, 2) end
+
+            local rotDeltaX = 0.0
+            local rotDeltaY = 0.0
+
+            if math.abs(lookX) > 0.0001 or math.abs(lookY) > 0.0001 then
+                rotDeltaX = lookX * 8.0
+                rotDeltaY = lookY * 8.0
+            else
+                -- 2. Déplacement relatif du curseur si les look controls sont à 0
+                local curX = GetControlNormal(0, 239)
+                local curY = GetControlNormal(0, 240)
+                if curX == 0.0 then curX = GetDisabledControlNormal(0, 239) end
+                if curY == 0.0 then curY = GetDisabledControlNormal(0, 240) end
+                if curX == 0.0 then curX = GetControlNormal(2, 239) end
+                if curY == 0.0 then curY = GetControlNormal(2, 240) end
+
+                if curX ~= 0.0 and curY ~= 0.0 then
+                    if rmbLastX and rmbLastY then
+                        rotDeltaX = (curX - rmbLastX) * 160.0
+                        rotDeltaY = (curY - rmbLastY) * 160.0
+                    end
+                    rmbLastX = curX
+                    rmbLastY = curY
+                end
+            end
+
+            if math.abs(rotDeltaX) > 0.0001 or math.abs(rotDeltaY) > 0.0001 then
+                camYaw = camYaw - rotDeltaX
+                camPitch = camPitch - rotDeltaY
+                if camPitch > 85.0 then camPitch = 85.0 end
+                if camPitch < -85.0 then camPitch = -85.0 end
+                SetCamRot(cam, camPitch, 0.0, camYaw, 2)
+            end
+        else
+            rmbLastX = nil
+            rmbLastY = nil
+            if not isCursorActive then
+                EnterCursorMode()
+                isCursorActive = true
+            end
+        end
+
+        -- Rotation caméra au clavier via les flèches directionnelles
+        if IsDisabledControlPressed(0, 174) or IsControlPressed(0, 174) then -- Flèche Gauche
+            camYaw = camYaw + 1.2
+            SetCamRot(cam, camPitch, 0.0, camYaw, 2)
+        end
+        if IsDisabledControlPressed(0, 175) or IsControlPressed(0, 175) then -- Flèche Droite
+            camYaw = camYaw - 1.2
+            SetCamRot(cam, camPitch, 0.0, camYaw, 2)
+        end
+        if IsDisabledControlPressed(0, 172) or IsControlPressed(0, 172) then -- Flèche Haut
+            camPitch = math.min(85.0, camPitch + 1.0)
+            SetCamRot(cam, camPitch, 0.0, camYaw, 2)
+        end
+        if IsDisabledControlPressed(0, 173) or IsControlPressed(0, 173) then -- Flèche Bas
+            camPitch = math.max(-85.0, camPitch - 1.0)
+            SetCamRot(cam, camPitch, 0.0, camYaw, 2)
+        end
+
+        -- Déplacement caméra (ZQSD / WASD / A/E)
+        local isMovingCam = IsDisabledControlPressed(0, 32) or IsDisabledControlPressed(0, 33)
+                         or IsDisabledControlPressed(0, 34) or IsDisabledControlPressed(0, 35)
+                         or IsDisabledControlPressed(0, 51) or IsDisabledControlPressed(0, 52)
+
+        if isMovingCam then
+            local currentSpeed = camMoveSpeed
+            if isHoldingShift and not isDragging then
+                currentSpeed = currentSpeed * 2.5 -- Sprint rapide
+            elseif (isHoldingAlt or IsDisabledControlPressed(0, 19)) and not isDragging then
+                currentSpeed = currentSpeed * 0.3 -- Déplacement lent et précis
+            end
+
+            local camForward, camRight, camUp = GetCamDirections(cam)
+            local camC = GetCamCoord(cam)
+
+            if IsDisabledControlPressed(0, 32) then camC = camC + camForward * currentSpeed end
+            if IsDisabledControlPressed(0, 33) then camC = camC - camForward * currentSpeed end
+            if IsDisabledControlPressed(0, 34) then camC = camC - camRight * currentSpeed end
+            if IsDisabledControlPressed(0, 35) then camC = camC + camRight * currentSpeed end
+            if IsDisabledControlPressed(0, 51) then camC = camC + camUp * currentSpeed end
+            if IsDisabledControlPressed(0, 52) then camC = camC - camUp * currentSpeed end
+
+            SetCamCoord(cam, camC.x, camC.y, camC.z)
+        end
+
+        -- Touche ÉCHAP : Quitter l'Éditeur / Caméra libre
         if (IsDisabledControlJustPressed(0, 200) or IsDisabledControlJustPressed(0, 199) or IsControlJustPressed(0, 200) or IsControlJustPressed(0, 199)) and (GetGameTimer() - gizmoActivationTime) > 300 then
             SetPauseMenuActive(false)
-            shouldReopenUI = false
             gizmoEnabled = false
-            print('^3[YMAP BUILDER - DEBUG]^7 Touche [ÉCHAP] pressée -> Fermeture complète de l\'éditeur')
             break
         end
 
-        -- Valider et Réouvrir direct l'UI des props (Touche ENTRÉE uniquement via keybind, jamais sur un clic souris)
-        if isValidateTriggered and (GetGameTimer() - gizmoActivationTime) > 300 then
-            isValidateTriggered = false
-            shouldReopenUI = true
+        -- Touche ENTRÉE : Valider le placement du prop et quitter le Gizmo (uniquement touche clavier Entrée)
+        if isEnterTriggered and (GetGameTimer() - gizmoActivationTime) > 300 then
+            isEnterTriggered = false
+            gizmoConfirmed = true
             gizmoEnabled = false
-            print('^2[YMAP BUILDER - DEBUG]^7 Touche [ENTRÉE] pressée -> Validation du prop et réouverture du menu')
             break
         end
 
-        -- Touche SUPPRIMER (Control 178 ou raccourci ox_lib _ymapGizmoDelete)
-        if (IsDisabledControlJustPressed(0, 178) or IsControlJustPressed(0, 178) or isDeleteTriggered) and (GetGameTimer() - gizmoActivationTime) > 200 then
+        -- Touche EFFACER / SUPPRIMER (Touches clavier Suppr ou Retour arrière)
+        -- Ne pose pas le prop, le supprime et réouvre le menu
+        local isErasePressed = isDeleteTriggered or isCancelTriggered or 
+                               IsDisabledControlJustPressed(0, 178) or IsControlJustPressed(0, 178)
+
+        if isErasePressed and (GetGameTimer() - gizmoActivationTime) > 200 then
             isDeleteTriggered = false
+            isCancelTriggered = false
+            gizmoCancelled = true
+
+            local delModel = currentModelName
             if currentEntity and DoesEntityExist(currentEntity) then
                 local delHandle = currentEntity
-                local delModel = currentModelName
                 if DeletePlacedPropByHandle then
-                    DeletePlacedPropByHandle(delHandle)
+                    DeletePlacedPropByHandle(delHandle, true)
                 else
                     if DoesEntityExist(delHandle) then DeleteEntity(delHandle) end
                 end
                 currentEntity = nil
                 currentModelName = nil
-                isDragging = false
-                PlaySoundFrontend(-1, "CANCEL", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
-                lib.notify({
-                    title = 'YMAP Builder',
-                    description = ('Prop "%s" supprimé. Caméra libre : cliquez sur un autre prop pour le bouger.'):format(tostring(delModel or 'sélectionné')),
-                    type = 'inform'
-                })
-            else
-                lib.notify({
-                    title = 'YMAP Builder',
-                    description = 'Aucun prop sélectionné. Cliquez sur un prop pour le sélectionner.',
-                    type = 'inform'
-                })
             end
-            -- ON NE FAIT PAS DE BREAK ! LE JOUEUR RESTE EN FREECAM !
+            isDragging = false
+
+            PlaySoundFrontend(-1, "CANCEL", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
+            lib.notify({
+                title = 'YMAP Builder',
+                description = delModel and ('Prop "%s" effacé. Retour au menu.'):format(tostring(delModel)) or 'Placement annulé. Retour au menu.',
+                type = 'inform'
+            })
+
+            gizmoEnabled = false
+            break
         end
 
-        -- Touche RETOUR ARRIÈRE (Backspace via ox_lib _ymapGizmoCancel)
-        if isCancelTriggered and (GetGameTimer() - gizmoActivationTime) > 300 then
-            isCancelTriggered = false
-            if currentEntity and DoesEntityExist(currentEntity) then
-                SetEntityDrawOutline(currentEntity, false)
-                currentEntity = nil
-                currentModelName = nil
-                isDragging = false
-                PlaySoundFrontend(-1, "CANCEL", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
-                lib.notify({ title = 'Éditeur', description = 'Prop désélectionné. Cliquez sur un prop pour le sélectionner.', type = 'inform' })
-            else
-                gizmoEnabled = false
-                break
-            end
-        end
+        -- Détection ALT pour duplication (ou MAJ / CTRL comme secours)
+        local isHoldingAlt = isAltPressed or IsDisabledControlPressed(0, 19) or IsControlPressed(0, 19)
+        local isAltJustPressed = IsDisabledControlJustPressed(0, 19) or IsControlJustPressed(0, 19)
 
-        -- Détection MAJ Gauche (ou CTRL comme secours)
-        local isDuplicateKeyHeld = isHoldingShift or IsDisabledControlPressed(0, 36) or IsControlPressed(0, 36)
-        local isDuplicateKeyJustPressed = isShiftJustPressed or IsDisabledControlJustPressed(0, 36) or IsControlJustPressed(0, 36)
+        local isDuplicateKeyHeld = isHoldingAlt or isHoldingShift or IsDisabledControlPressed(0, 36) or IsControlPressed(0, 36)
+        local isDuplicateKeyJustPressed = isAltJustPressed or isShiftJustPressed or IsDisabledControlJustPressed(0, 36) or IsControlJustPressed(0, 36)
 
         -- Si le clic de manipulation est relâché, réinitialiser l'état du drag
         if not isLMBDown and isDragging then
@@ -539,14 +536,12 @@ local function gizmoLoop(entity)
                 if UpdatePlacedObjectTransform then
                     UpdatePlacedObjectTransform(currentEntity)
                 end
-                print(('^3[YMAP BUILDER - DEBUG]^7 Fin du déplacement | Nouvelles coordonnées : %.2f, %.2f, %.2f'):format(dragStartCoords.x, dragStartCoords.y, dragStartCoords.z))
             end
         end
 
-        -- Manipulation du prop sélectionné avec DrawGizmo
+        -- Manipulation du prop sélectionné avec DrawGizmo (actif en mode Gizmo)
         local changedNative = false
-        if currentEntity and DoesEntityExist(currentEntity) then
-            local prevCoords = GetEntityCoords(currentEntity)
+        if not isFreecamMode and currentEntity and DoesEntityExist(currentEntity) then
             local matrixBuffer = makeEntityMatrix(currentEntity)
             changedNative = Citizen.InvokeNative(0xEB2EDCA2, matrixBuffer:Buffer(), 'Editor1', Citizen.ReturnResultAnyway())
 
@@ -556,9 +551,8 @@ local function gizmoLoop(entity)
                 if not isDragging then
                     isDragging = true
                     hasDuplicatedThisDrag = false
-                    dragStartCoords = prevCoords
+                    dragStartCoords = GetEntityCoords(currentEntity)
                     dragStartRot = GetEntityRotation(currentEntity, 2)
-                    print('^2[YMAP BUILDER - DEBUG]^7 Flèche Gizmo saisie -> Déplacement en direct du prop #' .. tostring(currentEntity))
                 end
 
                 if (isDuplicateKeyHeld and not hasDuplicatedThisDrag) or isDuplicateKeyJustPressed then
@@ -573,64 +567,9 @@ local function gizmoLoop(entity)
             isDragging = false
         end
 
-        -- SUIVI FLUIDE DE CAMÉRA STYLE CODEWALKER (Extrémités de l'écran lors du drag)
-        local edgePushVelocity = vector3(0.0, 0.0, 0.0)
-        if isDragging and currentEntity and DoesEntityExist(currentEntity) and not isHoldingRMB then
-            local propCoords = GetEntityCoords(currentEntity)
-            local onScreen, screenX, screenY = GetScreenCoordFromWorldCoord(propCoords.x, propCoords.y, propCoords.z)
-            
-            local camCoords = GetCamCoord(cam)
-            local toProp = propCoords - camCoords
-            local forwardDot = (toProp.x * camForward.x) + (toProp.y * camForward.y) + (toProp.z * camForward.z)
-
-            local pFactorX, pFactorY = 0.0, 0.0
-            if forwardDot > 0 then
-                if onScreen then
-                    -- Zone d'extrémité pour le prop : 20% des bords
-                    pFactorX = calculateEdgeFactor(screenX, 0.20)
-                    pFactorY = calculateEdgeFactor(screenY, 0.20)
-                else
-                    -- Si le prop sort de l'écran, poussée dans sa direction
-                    local rightDot = (toProp.x * camRight.x) + (toProp.y * camRight.y) + (toProp.z * camRight.z)
-                    local upDot = (toProp.x * camUp.x) + (toProp.y * camUp.y) + (toProp.z * camUp.z)
-                    pFactorX = rightDot > 0 and 1.0 or -1.0
-                    pFactorY = upDot > 0 and -1.0 or 1.0
-                end
-            end
-
-            -- Détecte également si le curseur de la souris atteint le bord pendant la manipulation
-            local mouseX = GetControlNormal(0, 239)
-            local mouseY = GetControlNormal(0, 240)
-            local mFactorX = calculateEdgeFactor(mouseX, 0.08)
-            local mFactorY = calculateEdgeFactor(mouseY, 0.08)
-
-            local moveFactorX = (math.abs(pFactorX) > math.abs(mFactorX)) and pFactorX or mFactorX
-            local moveFactorY = (math.abs(pFactorY) > math.abs(mFactorY)) and pFactorY or mFactorY
-
-            if math.abs(moveFactorX) > 0.01 or math.abs(moveFactorY) > 0.01 then
-                edgePushVelocity = (camRight * moveFactorX - camUp * moveFactorY) * (currentMoveSpeed * 1.1)
-            end
-        end
-
-        -- PHYSIQUE ET INERTIE DE VOL CODEWALKER UNIFIÉE (Damping / Friction cinématique)
-        local totalTargetVelocity = targetInputVelocity + edgePushVelocity
-
-        if #(totalTargetVelocity) > 0.001 then
-            -- Accélération progressive et continue
-            camVelocity = camVelocity + (totalTargetVelocity - camVelocity) * 0.16
-        else
-            -- Décélération et friction soyeuse (inertie CodeWalker)
-            camVelocity = camVelocity * 0.82
-        end
-
-        if #(camVelocity) > 0.0002 then
-            local curCam = GetCamCoord(cam)
-            SetCamCoord(cam, curCam.x + camVelocity.x, curCam.y + camVelocity.y, curCam.z + camVelocity.z)
-        end
-
-        -- SÉLECTION D'UN AUTRE PROP PAR CLIC GAUCHE DANS LE MONDE
+        -- SÉLECTION D'UN AUTRE PROP PAR CLIC GAUCHE DANS LE MONDE (actif en mode Gizmo)
         -- Si l'utilisateur clique (sans glisser les flèches du Gizmo) et ne maintient pas le clic droit
-        if isLMBJustPressed and not isDragging and not changedNative and not isHoldingRMB then
+        if not isFreecamMode and isLMBJustPressed and not changedNative and not isHoldingRMB then
             local pickedHandle, pickedData = PickPlacedPropUnderMouse(cam)
             if pickedHandle and DoesEntityExist(pickedHandle) then
                 if pickedHandle ~= currentEntity then
@@ -657,14 +596,16 @@ local function gizmoLoop(entity)
     end
     
     if isCursorActive then
-        isCursorActive = false
-        pcall(LeaveCursorMode)
+        LeaveCursorMode()
     end
+    isCursorActive = false
 
+    ClearFocus()
     RenderScriptCams(false, true, 400, true, true)
     DestroyCam(cam, false)
     currentCam = nil
     FreezeEntityPosition(playerPed, false)
+    SetEntityCollision(playerPed, true, true)
     SetEntityVisible(playerPed, true, false)
 
     if currentEntity and DoesEntityExist(currentEntity) then
@@ -674,17 +615,6 @@ local function gizmoLoop(entity)
 
     gizmoEnabled = false
     currentEntity = nil
-
-    -- Si validé avec ENTRÉE, réouvrir immédiatement l'UI des props
-    if shouldReopenUI then
-        shouldReopenUI = false
-        Wait(50)
-        if openMainUI then
-            openMainUI()
-        else
-            TriggerEvent('nxs_ymapbuilder:client:openUI')
-        end
-    end
 end
 
 local function textUILoop()
@@ -692,39 +622,52 @@ local function textUILoop()
         while gizmoEnabled do
             Wait(250)
 
-            if currentEntity and DoesEntityExist(currentEntity) then
+            if isFreecamMode then
+                lib.showTextUI(
+                    '**MODE CAMÉRA LIBRE (FREECAM)**  \n' ..
+                    ('Vitesse de vol : **%.2f** (Molette Souris)  \n\n'):format(camMoveSpeed) ..
+                    '**[Souris]** - **Orienter la vue à 360°**  \n' ..
+                    '**[ZQSD]** - **Voler dans la scène**  \n' ..
+                    '**[A / E]** - Monter / Descendre  \n' ..
+                    '**[MAJ]** - Accélérer | **[ALT]** - Ralentir  \n' ..
+                    '**[ESPACE]** - **Passer en Mode Gizmo (Manipuler)**  \n' ..
+                    '**[ENTRÉE]** - **Valider la position**  \n' ..
+                    '**[EFFACER / SUPPR]** - **Annuler & Menu**  \n' ..
+                    '**[ÉCHAP]** - **Quitter**'
+                )
+            elseif currentEntity and DoesEntityExist(currentEntity) then
                 local coords = GetEntityCoords(currentEntity)
                 local rot = GetEntityRotation(currentEntity, 2)
 
                 lib.showTextUI(
-                    '**MODE GIZMO 3D (ÉDITEUR)**  \n' ..
+                    '**MODE GIZMO 3D (MANIPULATION)**  \n' ..
                     ('Mode: **%s** | Espace: **%s** | Snap: **%s**  \n'):format(currentMode, isRelative and 'Relatif' or 'Monde', isSnapEnabled and ('OUI (%.1fm/%.0f°)'):format(snapTransStep, snapRotStep) or 'NON') ..
                     ('Pos: `%.2f, %.2f, %.2f`  \n'):format(coords.x, coords.y, coords.z) ..
                     ('Rot: `%.1f, %.1f, %.1f`  \n\n'):format(rot.x, rot.y, rot.z) ..
-                    '**[ENTRÉE]** - **Valider & Ouvrir le menu des props**  \n' ..
+                    '**[ESPACE]** - **Activer la Caméra Libre (Freecam)**  \n' ..
                     '[Clic Gauche Axes] - Manipuler le prop  \n' ..
-                    '**[Clic Gauche Prop]** - **Sélectionner un autre prop**  \n' ..
-                    '**[MAJ + Flèche]** - **Dupliquer le prop**  \n' ..
-                    '**[SUPPR]** - **Supprimer (Reste en caméra libre)**  \n' ..
+                    '**[ALT + Déplacer]** - **Dupliquer le prop**  \n' ..
+                    '**[EFFACER / SUPPR]** - **Effacer le prop & Réouvrir le menu**  \n' ..
+                    '**[ENTRÉE]** - **Valider la position & Réouvrir le menu**  \n' ..
                     '**[F]** - **Cibler au viseur (Picker)**  \n' ..
                     '**[X]** - Basculer Snap Grille/Angle  \n' ..
                     '[W] - Translation | [R] - Rotation | [Q] - Local/Monde  \n' ..
-                    '[LALT] - Plaquer au sol  \n' ..
-                    '[ZQSD / Clic Droit] - Déplacer Caméra  \n' ..
-                    '[A / E] - Hauteur Caméra  \n' ..
-                    '**[ÉCHAP]** - **Fermer l\'Éditeur**'
+                    '[G] - Plaquer au sol  \n' ..
+                    '[Clic Droit Maintenu] - Pivoter temporairement la vue  \n' ..
+                    '[ZQSD] - Déplacer Caméra | [A / E] - Hauteur  \n' ..
+                    '**[ÉCHAP]** - **Quitter l\'Éditeur**'
                 )
             else
                 lib.showTextUI(
                     '**CAMÉRA LIBRE (ÉDITEUR)**  \n' ..
                     'Aucun prop sélectionné.  \n\n' ..
-                    '**[ENTRÉE]** - **Ouvrir le menu des props**  \n' ..
+                    '**[ESPACE]** - **Activer la Caméra Libre (Freecam)**  \n' ..
                     '**[Clic Gauche]** - **Cliquer sur un prop pour le sélectionner & bouger**  \n' ..
                     '**[F]** - **Cibler un prop au viseur (Picker)**  \n' ..
-                    '[ZQSD] - Déplacer la caméra  \n' ..
-                    '[A / E] - Hauteur de la caméra  \n' ..
-                    '[Clic Droit] - Orienter la vue  \n' ..
-                    '**[ÉCHAP]** - **Fermer l\'Éditeur**'
+                    '**[EFFACER / SUPPR]** - **Réouvrir le menu**  \n' ..
+                    '[ZQSD] - Déplacer la caméra | [A / E] - Hauteur  \n' ..
+                    '[Clic Droit Maintenu] - Orienter la vue  \n' ..
+                    '**[ENTRÉE / ÉCHAP]** - **Quitter l\'Éditeur**'
                 )
             end
         end
@@ -735,26 +678,36 @@ end
 function useGizmo(entity, modelName)
     gizmoEnabled = true
     gizmoCancelled = false
+    gizmoConfirmed = false
     isDeleteTriggered = false
     isCancelTriggered = false
-    isValidateTriggered = false
-    shouldReopenUI = false
+    isEnterTriggered = false
+    isAltPressed = false
+    isRMBPressed = false
     gizmoActivationTime = GetGameTimer()
+    isFreecamMode = false
+    camMoveSpeed = 0.15
     currentEntity = entity
     currentModelName = modelName
-
-    -- Forcer la désactivation totale de NUI et libérer l'écran pour le Gizmo 3D
-    SetNuiFocus(false, false)
-    SendNUIMessage({ action = 'forceClose' })
 
     textUILoop()
     gizmoLoop(entity)
 
     SetEntityVisible(PlayerPedId(), true, false)
 
+    if gizmoCancelled or gizmoConfirmed then
+        Wait(150)
+        if openMainUI then
+            openMainUI()
+        else
+            TriggerEvent('nxs_ymapbuilder:client:openUI')
+        end
+    end
+
     return {
         handle = currentEntity,
-        cancelled = gizmoCancelled
+        cancelled = gizmoCancelled,
+        confirmed = gizmoConfirmed
     }
 end
 
@@ -762,38 +715,40 @@ exports("useGizmo", useGizmo)
 exports("isGizmoActive", function()
     return gizmoEnabled
 end)
-exports("PickPlacedPropUnderMouse", PickPlacedPropUnderMouse)
 
-function PickPlacedPropAtCoords(cam, customX, customY)
-    return PickPlacedPropUnderMouse(cam, customX, customY)
-end
-
--- Keybinding natif du clic gauche pour la saisie et manipulation des flèches Gizmo (ImGuizmo)
-RegisterKeyMapping('+gizmoSelect', 'Sélectionner l\'axe Gizmo', 'MOUSE_BUTTON', 'MOUSE_LEFT')
-RegisterKeyMapping('+gizmoTranslation', 'Mode Translation Gizmo', 'keyboard', 'W')
-RegisterKeyMapping('+gizmoRotation', 'Mode Rotation Gizmo', 'keyboard', 'R')
-RegisterKeyMapping('+gizmoLocal', 'Basculer Espace Local/Monde', 'keyboard', 'Q')
-
+-- Raccourcis clavier pour le Gizmo
 lib.addKeybind({
     name = '_ymapGizmoSelect',
     description = 'Sélectionner l\'axe Gizmo',
     defaultMapper = 'MOUSE_BUTTON',
     defaultKey = 'MOUSE_LEFT',
     onPressed = function()
-        if gizmoEnabled then
-            ExecuteCommand('+gizmoSelect')
-        end
+        if not gizmoEnabled then return end
+        isGizmoSelectPressed = true
+        ExecuteCommand('+gizmoSelect')
     end,
     onReleased = function()
-        if gizmoEnabled then
-            ExecuteCommand('-gizmoSelect')
-        end
+        isGizmoSelectPressed = false
+        ExecuteCommand('-gizmoSelect')
     end
 })
 
--- Raccourcis ox_lib pour changer de mode de manipulation (Translation, Rotation, Espace Local/Monde)
 lib.addKeybind({
-    name = '_ymapGizmoModeTrans',
+    name = '_ymapGizmoCamRMB',
+    description = 'Orienter Caméra (Clic Droit)',
+    defaultMapper = 'MOUSE_BUTTON',
+    defaultKey = 'MOUSE_RIGHT',
+    onPressed = function()
+        if not gizmoEnabled then return end
+        isRMBPressed = true
+    end,
+    onReleased = function()
+        isRMBPressed = false
+    end
+})
+
+lib.addKeybind({
+    name = '_ymapGizmoTranslation',
     description = 'Mode Translation Gizmo',
     defaultKey = 'W',
     onPressed = function()
@@ -807,7 +762,7 @@ lib.addKeybind({
 })
 
 lib.addKeybind({
-    name = '_ymapGizmoModeRot',
+    name = '_ymapGizmoRotation',
     description = 'Mode Rotation Gizmo',
     defaultKey = 'R',
     onPressed = function()
@@ -821,7 +776,7 @@ lib.addKeybind({
 })
 
 lib.addKeybind({
-    name = '_ymapGizmoModeLocal',
+    name = '_ymapGizmoLocal',
     description = 'Basculer Espace Local/Monde',
     defaultKey = 'Q',
     onPressed = function()
@@ -836,39 +791,18 @@ lib.addKeybind({
 
 lib.addKeybind({
     name = '_ymapGizmoClose',
-    description = 'Valider et ouvrir le menu des props',
+    description = 'Valider modifications Gizmo (Entrée)',
     defaultKey = 'RETURN',
-    onPressed = function()
-        if not gizmoEnabled then return end
-        if (GetGameTimer() - gizmoActivationTime) < 300 then return end
-        isValidateTriggered = true
-    end,
     onReleased = function()
         if not gizmoEnabled then return end
         if (GetGameTimer() - gizmoActivationTime) < 300 then return end
-        isValidateTriggered = true
-    end
-})
-
-lib.addKeybind({
-    name = '_ymapGizmoCloseNumpad',
-    description = 'Valider et ouvrir le menu des props (Pavé Num)',
-    defaultKey = 'NUMPADENTER',
-    onPressed = function()
-        if not gizmoEnabled then return end
-        if (GetGameTimer() - gizmoActivationTime) < 300 then return end
-        isValidateTriggered = true
-    end,
-    onReleased = function()
-        if not gizmoEnabled then return end
-        if (GetGameTimer() - gizmoActivationTime) < 300 then return end
-        isValidateTriggered = true
+        isEnterTriggered = true
     end
 })
 
 lib.addKeybind({
     name = '_ymapGizmoDelete',
-    description = 'Supprimer le prop sélectionné (Gizmo)',
+    description = 'Effacer / Annuler le prop et réouvrir le menu (Suppr)',
     defaultKey = 'DELETE',
     onReleased = function()
         if not gizmoEnabled then return end
@@ -879,11 +813,11 @@ lib.addKeybind({
 
 lib.addKeybind({
     name = '_ymapGizmoCancel',
-    description = 'Désélectionner ou quitter',
+    description = 'Effacer / Annuler le prop et réouvrir le menu (Retour)',
     defaultKey = 'BACK',
     onReleased = function()
         if not gizmoEnabled then return end
-        if (GetGameTimer() - gizmoActivationTime) < 300 then return end
+        if (GetGameTimer() - gizmoActivationTime) < 200 then return end
         isCancelTriggered = true
     end
 })
@@ -916,19 +850,25 @@ function SnapEntityToGroundProperly(entity)
 end
 
 lib.addKeybind({
-    name = '_ymapGizmoSnapGround',
-    description = 'Plaquer au sol (Gizmo)',
+    name = '_ymapGizmoDuplicateAlt',
+    description = 'Maintenir pour dupliquer le prop (Alt)',
     defaultKey = 'LMENU',
     onPressed = function()
+        if not gizmoEnabled then return end
+        isAltPressed = true
+    end,
+    onReleased = function()
+        isAltPressed = false
+    end
+})
+
+lib.addKeybind({
+    name = '_ymapGizmoSnapGround',
+    description = 'Plaquer au sol (Gizmo) [G]',
+    defaultKey = 'G',
+    onPressed = function()
         if not gizmoEnabled or not currentEntity then return end
-        local prev = GetEntityCoords(currentEntity)
         SnapEntityToGroundProperly(currentEntity)
-        local after = GetEntityCoords(currentEntity)
-        local diff = after - prev
-        if #(diff) > 0.001 and currentCam then
-            local cp = GetCamCoord(currentCam)
-            SetCamCoord(currentCam, cp.x + diff.x, cp.y + diff.y, cp.z + diff.z)
-        end
     end
 })
 
@@ -982,38 +922,3 @@ lib.addKeybind({
         end
     end
 })
-
--- Nettoyage complet si le script est arrêté ou redémarré en plein mode Gizmo
-AddEventHandler('onResourceStop', function(resourceName)
-    if GetCurrentResourceName() ~= resourceName then return end
-    gizmoEnabled = false
-    if isCursorActive then
-        isCursorActive = false
-        pcall(LeaveCursorMode)
-    end
-    pcall(function() lib.hideTextUI() end)
-    if currentCam and DoesCamExist(currentCam) then
-        RenderScriptCams(false, false, 0, true, true)
-        DestroyCam(currentCam, false)
-        currentCam = nil
-    end
-    local playerPed = PlayerPedId()
-    FreezeEntityPosition(playerPed, false)
-    SetEntityVisible(playerPed, true, false)
-end)
-
--- Commande de secours pour purger instantanément tout résidu de curseur sans redémarrer le jeu
-RegisterCommand('fixcursor', function()
-    for _ = 1, 60 do
-        pcall(LeaveCursorMode)
-    end
-    SetNuiFocus(false, false)
-    SetNuiFocusKeepInput(false)
-    pcall(function() lib.hideTextUI() end)
-    lib.notify({
-        title = 'Curseur',
-        description = 'Curseur et interface réinitialisés.',
-        type = 'success'
-    })
-    print('^2[YMAP BUILDER]^7 Curseur purgé et réinitialisé.')
-end, false)

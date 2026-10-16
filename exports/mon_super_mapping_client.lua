@@ -1,7 +1,7 @@
 -- Mapping généré par nxs_ymapbuilder (mon_super_mapping)
 -- Nombre d'objets: 1
 local props = {
-    { model = `catreaper`, coords = vector3(1810.358, 3668.558, 33.261), rot = vector3(-0.00, -0.00, -54.70) },
+    { model = `prop_barrier_work05`, coords = vector3(1795.329, 3660.792, 33.280), rot = vector3(0.00, 0.00, 78.84) },
 }
 
 CreateThread(function()

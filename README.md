@@ -45,21 +45,24 @@ Script FiveM Standalone permettant de poser des props directement en jeu, de les
 
 | Touche | Action |
 |---|---|
+| **`[ESPACE]`** | **Basculer en Mode Caméra Libre (Freecam)** |
 | **Clic Gauche** | Manipuler les flèches / cercles Gizmo |
-| **MAJ Gauche + Flèche** | **Dupliquer le prop instantanément** |
+| **`[ALT + Déplacer]`** | **Dupliquer le prop instantanément** |
 | **`[F]`** | **Prop Picker** (Cibler un prop au viseur) |
 | **`[X]`** | **Basculer le Snapping Grille / Angles** |
 | **`[W]`** | Mode Translation (Flèches X, Y, Z) |
 | **`[R]`** | Mode Rotation (Cercles Roll, Pitch, Yaw) |
 | **`[Q]`** | Alterner Espace (Local / Monde) |
-| **`[Alt Gauche]`** | Plaquer le prop au sol |
-| **`[ZQSD]`** | Déplacer la caméra de navigation |
+| **`[G]`** | **Plaquer le prop au sol** |
+| **`[ZQSD]`** | Déplacer / Voler avec la caméra |
 | **`[A / E]`** | Monter / Descendre la caméra |
-| **`[Clic Droit]`** | Pivoter la vue caméra |
-| **`[ENTRÉE]`** | Valider et enregistrer le placement |
-| **`[SUPPR]`** | **Supprimer le prop sélectionné** |
-| **`[ÉCHAP]`** | **Fermer Gizmo (en jeu : Ouvrir/Fermer le panel YMAP)** |
-| **`[RETOUR]`** | Annuler la manipulation |
+| **`[Souris (Freecam)]`** | **Orienter la vue à 360° librement** |
+| **`[Molette Souris]`** | **Ajuster la vitesse de vol de la Freecam** |
+| **`[MAJ / ALT]`** | Accélérer (Sprint) / Ralentir (Précision) |
+| **`[Clic Droit]`** | Pivoter temporairement la vue caméra |
+| **`[ENTRÉE]`** | **Valider la position et réouvrir le menu** |
+| **`[EFFACER / SUPPR / RETOUR]`** | **Effacer / Annuler le prop et réouvrir le menu** |
+| **`[ÉCHAP]`** | **Quitter l'Éditeur** |
 
 ---
 

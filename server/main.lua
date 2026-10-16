@@ -1,3 +1,17 @@
+-- Permissions ACE automatiques pour les commandes du Gizmo 3D FiveM (Im3D)
+CreateThread(function()
+    local commands = {
+        'command.+gizmoSelect', 'command.-gizmoSelect',
+        'command.+gizmoTranslation', 'command.-gizmoTranslation',
+        'command.+gizmoRotation', 'command.-gizmoRotation',
+        'command.+gizmoLocal', 'command.-gizmoLocal',
+        'command.+gizmoScale', 'command.-gizmoScale'
+    }
+    for _, cmd in ipairs(commands) do
+        ExecuteCommand(('add_ace builtin.everyone %s allow'):format(cmd))
+    end
+end)
+
 local function EulerToQuaternion(rotX, rotY, rotZ)
     local radX = math.rad(rotX) * 0.5
     local radY = math.rad(rotY) * 0.5
@@ -68,6 +82,20 @@ CreateThread(function()
     ExecuteCommand('add_ace builtin.everyone command.-gizmoRotation allow')
     ExecuteCommand('add_ace builtin.everyone command.+gizmoLocal allow')
     ExecuteCommand('add_ace builtin.everyone command.-gizmoLocal allow')
+end)
+
+RegisterNetEvent('nxs_ymapbuilder:server:grantGizmoPermissions', function()
+    local src = source
+    if src and src > 0 then
+        ExecuteCommand(('add_ace player.%s command.+gizmoSelect allow'):format(src))
+        ExecuteCommand(('add_ace player.%s command.-gizmoSelect allow'):format(src))
+        ExecuteCommand(('add_ace player.%s command.+gizmoTranslation allow'):format(src))
+        ExecuteCommand(('add_ace player.%s command.-gizmoTranslation allow'):format(src))
+        ExecuteCommand(('add_ace player.%s command.+gizmoRotation allow'):format(src))
+        ExecuteCommand(('add_ace player.%s command.-gizmoRotation allow'):format(src))
+        ExecuteCommand(('add_ace player.%s command.+gizmoLocal allow'):format(src))
+        ExecuteCommand(('add_ace player.%s command.-gizmoLocal allow'):format(src))
+    end
 end)
 
 RegisterCommand(Config.Command, function(source, args)

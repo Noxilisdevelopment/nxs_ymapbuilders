@@ -5,7 +5,6 @@ local highlightedEntity = nil
 -- Sécurité au chargement du script (ex: après un restart en pleine interface)
 SetNuiFocus(false, false)
 SetNuiFocusKeepInput(false)
-SendNUIMessage({ action = 'forceClose' })
 
 -- Historique Annuler / Rétablir (Undo / Redo)
 local undoHistory = {}
@@ -32,7 +31,7 @@ function GetPlacedObjectByEntity(ent)
     return nil, nil
 end
 
-function DeletePlacedPropByHandle(ent)
+function DeletePlacedPropByHandle(ent, skipUndo)
     for i = #placedObjects, 1, -1 do
         if placedObjects[i].handle == ent then
             local data = placedObjects[i]
@@ -41,7 +40,13 @@ function DeletePlacedPropByHandle(ent)
             end
             table.remove(placedObjects, i)
             for j = 1, #placedObjects do placedObjects[j].id = j end
-            pushUndo({ type = 'DELETE', id = i, data = data })
+            if not skipUndo then
+                pushUndo({ type = 'DELETE', id = i, data = data })
+            else
+                if #undoHistory > 0 and undoHistory[#undoHistory].handle == ent then
+                    table.remove(undoHistory)
+                end
+            end
             if isUIOpen then
                 SendNUIMessage({ action = 'updatePlaced', placedEntities = getUIPlacedEntities() })
             end
@@ -381,18 +386,29 @@ local function spawnAndGizmoProp(modelName, initialRot)
         quat = { x = qx, y = qy, z = qz, w = qw }
     })
 
-    PlaySoundFrontend(-1, "SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
     lib.notify({
         title = 'YMAP Builder',
-        description = ('Prop "%s" posé (#%d)'):format(modelName, id),
-        type = 'success'
+        description = ('Mode placement : [ENTRÉE] valider, [EFFACER / SUPPR] annuler.'):format(modelName),
+        type = 'inform'
     })
 
     -- Lancement de la Caméra Libre / Éditeur Gizmo 3D
     CreateThread(function()
-        exports.nxs_ymapbuilder:useGizmo(obj, modelName)
-        if DoesEntityExist(obj) then
-            UpdatePlacedObjectTransform(obj)
+        local res = exports.nxs_ymapbuilder:useGizmo(obj, modelName)
+        if res and res.cancelled then
+            if DoesEntityExist(obj) then
+                DeletePlacedPropByHandle(obj, true)
+            end
+        else
+            if DoesEntityExist(obj) then
+                UpdatePlacedObjectTransform(obj)
+                PlaySoundFrontend(-1, "SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET", true)
+                lib.notify({
+                    title = 'YMAP Builder',
+                    description = ('Prop "%s" posé avec succès.'):format(modelName),
+                    type = 'success'
+                })
+            end
         end
     end)
 end
@@ -453,8 +469,8 @@ RegisterNUICallback('editPropGizmo', function(data, cb)
     closeMainUI()
 
     CreateThread(function()
-        exports.nxs_ymapbuilder:useGizmo(entData.handle, entData.model)
-        if DoesEntityExist(entData.handle) then
+        local res = exports.nxs_ymapbuilder:useGizmo(entData.handle, entData.model)
+        if not (res and res.cancelled) and DoesEntityExist(entData.handle) then
             UpdatePlacedObjectTransform(entData.handle)
         end
     end)
@@ -493,8 +509,8 @@ RegisterNUICallback('clickWorldProp', function(data, cb)
 
         CreateThread(function()
             Wait(50)
-            exports.nxs_ymapbuilder:useGizmo(pickedHandle, pickedData and pickedData.model)
-            if DoesEntityExist(pickedHandle) then
+            local res = exports.nxs_ymapbuilder:useGizmo(pickedHandle, pickedData and pickedData.model)
+            if not (res and res.cancelled) and DoesEntityExist(pickedHandle) then
                 UpdatePlacedObjectTransform(pickedHandle)
             end
         end)
@@ -726,5 +742,4 @@ AddEventHandler('onClientResourceStart', function(resourceName)
     isUIOpen = false
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
-    SendNUIMessage({ action = 'forceClose' })
 end)

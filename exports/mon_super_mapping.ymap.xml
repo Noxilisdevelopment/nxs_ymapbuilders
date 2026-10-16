@@ -4,17 +4,17 @@
   <parent/>
   <flags value="0"/>
   <contentFlags value="65"/>
-  <streamingExtentsMin x="1660.357788" y="3518.558350" z="-116.738670"/>
-  <streamingExtentsMax x="1960.357788" y="3818.558350" z="183.261330"/>
-  <entitiesExtentsMin x="1780.357788" y="3638.558350" z="3.261330"/>
-  <entitiesExtentsMax x="1840.357788" y="3698.558350" z="63.261330"/>
+  <streamingExtentsMin x="1645.328857" y="3510.792236" z="-116.720467"/>
+  <streamingExtentsMax x="1945.328857" y="3810.792236" z="183.279533"/>
+  <entitiesExtentsMin x="1765.328857" y="3630.792236" z="3.279533"/>
+  <entitiesExtentsMax x="1825.328857" y="3690.792236" z="63.279533"/>
   <entities>
     <Item type="CEntityDef">
-      <archetypeName>catreaper</archetypeName>
+      <archetypeName>prop_barrier_work05</archetypeName>
       <flags value="1572864"/>
       <guid value="1"/>
-      <position x="1810.35778809" y="3668.55834961" z="33.26132965"/>
-      <rotation x="-0.00000000" y="-0.00000000" z="0.45943713" w="0.88821030"/>
+      <position x="1795.32885742" y="3660.79223633" z="33.27953339"/>
+      <rotation x="-0.00000000" y="-0.00000000" z="-0.63497108" w="0.77253586"/>
       <scaleXY value="1.00000000"/>
       <scaleZ value="1.00000000"/>
       <parentIndex value="-1"/>
