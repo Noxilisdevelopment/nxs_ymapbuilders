@@ -289,6 +289,10 @@ local function gizmoLoop(entity)
 
     local camYaw = pRot.z
     local camPitch = -14.0
+    local targetCamYaw = camYaw
+    local targetCamPitch = camPitch
+    local camVelocity = vector3(0.0, 0.0, 0.0)
+    local camBaseSpeed = 0.18
 
     local dragStartCoords = currentEntity and GetEntityCoords(currentEntity) or nil
     local dragStartRot = currentEntity and GetEntityRotation(currentEntity, 2) or nil
@@ -347,7 +351,6 @@ local function gizmoLoop(entity)
     end
     
     local wasLMBDown = false
-    local autoPanVelocity = vector3(0.0, 0.0, 0.0)
 
     -- Fonction pour calculer l'accélération progressive aux extrémités de l'écran
     local function calculateEdgeFactor(val, margin)
@@ -367,10 +370,16 @@ local function gizmoLoop(entity)
     while gizmoEnabled do
         Wait(0)
         
-        -- Rotation caméra avec le clic droit
+        -- Réglage dynamique de la vitesse de caméra via la molette de la souris (CodeWalker)
+        if IsDisabledControlJustPressed(0, 241) or IsControlJustPressed(0, 241) or IsDisabledControlJustPressed(0, 14) or IsControlJustPressed(0, 14) then
+            camBaseSpeed = math.min(1.5, camBaseSpeed + 0.03)
+        elseif IsDisabledControlJustPressed(0, 242) or IsControlJustPressed(0, 242) or IsDisabledControlJustPressed(0, 15) or IsControlJustPressed(0, 15) then
+            camBaseSpeed = math.max(0.03, camBaseSpeed - 0.03)
+        end
+
+        -- Rotation caméra fluide avec le clic droit (CodeWalker look around avec lissage)
         local isHoldingRMB = IsDisabledControlPressed(0, 25) or IsControlPressed(0, 25)
         if isHoldingRMB then
-            -- Désactiver les contrôles de vue du jeu pour capter le delta brut sans interférence
             DisableControlAction(0, 1, true)
             DisableControlAction(0, 2, true)
 
@@ -379,26 +388,23 @@ local function gizmoLoop(entity)
             local mouseY = GetDisabledControlNormal(0, 2)
             if mouseY == 0.0 then mouseY = GetControlNormal(0, 2) end
 
-            camYaw = camYaw - (mouseX * 8.0)
-            camPitch = camPitch - (mouseY * 8.0)
-            if camPitch > 85.0 then camPitch = 85.0 end
-            if camPitch < -85.0 then camPitch = -85.0 end
+            targetCamYaw = targetCamYaw - (mouseX * 7.5)
+            targetCamPitch = targetCamPitch - (mouseY * 7.5)
+            if targetCamPitch > 85.0 then targetCamPitch = 85.0 end
+            if targetCamPitch < -85.0 then targetCamPitch = -85.0 end
             
+            -- Interpolation soyeuse de l'orientation
+            camYaw = camYaw + (targetCamYaw - camYaw) * 0.40
+            camPitch = camPitch + (targetCamPitch - camPitch) * 0.40
             SetCamRot(cam, camPitch, 0.0, camYaw, 2)
         else
             SetMouseCursorActiveThisFrame()
             SetMouseCursorSprite(1)
             EnableControlAction(0, 239, true)
             EnableControlAction(0, 240, true)
+            targetCamYaw = camYaw
+            targetCamPitch = camPitch
         end
-
-        -- Déplacement caméra (ZQSD / WASD / A/E)
-        local isMovingCam = IsDisabledControlPressed(0, 32) or IsControlPressed(0, 32)
-                         or IsDisabledControlPressed(0, 33) or IsControlPressed(0, 33)
-                         or IsDisabledControlPressed(0, 34) or IsControlPressed(0, 34)
-                         or IsDisabledControlPressed(0, 35) or IsControlPressed(0, 35)
-                         or IsDisabledControlPressed(0, 51) or IsControlPressed(0, 51)
-                         or IsDisabledControlPressed(0, 52) or IsControlPressed(0, 52)
 
         local isLMBDown = IsDisabledControlPressed(0, 24) or IsControlPressed(0, 24) 
                        or IsDisabledControlPressed(0, 237) or IsControlPressed(0, 237)
@@ -411,21 +417,31 @@ local function gizmoLoop(entity)
         local isHoldingShift = IsDisabledControlPressed(0, 21) or IsControlPressed(0, 21)
         local isShiftJustPressed = IsDisabledControlJustPressed(0, 21) or IsControlJustPressed(0, 21)
 
-        local moveSpeed = (isHoldingShift and not isDragging) and 0.38 or 0.15
+        -- Vélocité cible des contrôles clavier (ZQSD / WASD / Espace / Ctrl / A / E)
+        local currentMoveSpeed = isHoldingShift and (camBaseSpeed * 2.5) or camBaseSpeed
         local camForward, camRight, camUp = GetCamDirections(cam)
 
-        if isMovingCam then
-            local currentCamCoords = GetCamCoord(cam)
-
-            if IsDisabledControlPressed(0, 32) or IsControlPressed(0, 32) then currentCamCoords = currentCamCoords + camForward * moveSpeed end
-            if IsDisabledControlPressed(0, 33) or IsControlPressed(0, 33) then currentCamCoords = currentCamCoords - camForward * moveSpeed end
-            if IsDisabledControlPressed(0, 34) or IsControlPressed(0, 34) then currentCamCoords = currentCamCoords - camRight * moveSpeed end
-            if IsDisabledControlPressed(0, 35) or IsControlPressed(0, 35) then currentCamCoords = currentCamCoords + camRight * moveSpeed end
-            if IsDisabledControlPressed(0, 51) or IsControlPressed(0, 51) then currentCamCoords = currentCamCoords + camUp * moveSpeed end
-            if IsDisabledControlPressed(0, 52) or IsControlPressed(0, 52) then currentCamCoords = currentCamCoords - camUp * moveSpeed end
-
-            SetCamCoord(cam, currentCamCoords.x, currentCamCoords.y, currentCamCoords.z)
+        local moveInput = vector3(0.0, 0.0, 0.0)
+        -- Z (Avance) / S (Recule)
+        if IsDisabledControlPressed(0, 32) or IsControlPressed(0, 32) then moveInput = moveInput + camForward end
+        if IsDisabledControlPressed(0, 33) or IsControlPressed(0, 33) then moveInput = moveInput - camForward end
+        -- Q/A (Gauche) / D (Droite)
+        if IsDisabledControlPressed(0, 34) or IsControlPressed(0, 34) then moveInput = moveInput - camRight end
+        if IsDisabledControlPressed(0, 35) or IsControlPressed(0, 35) then moveInput = moveInput + camRight end
+        -- E ou Espace (Monte verticalement dans le monde)
+        if IsDisabledControlPressed(0, 51) or IsControlPressed(0, 51) or IsDisabledControlPressed(0, 22) or IsControlPressed(0, 22) then
+            moveInput = moveInput + vector3(0.0, 0.0, 1.0)
         end
+        -- A ou Ctrl (Descend verticalement dans le monde)
+        if IsDisabledControlPressed(0, 52) or IsControlPressed(0, 52) or IsDisabledControlPressed(0, 36) or IsControlPressed(0, 36) then
+            moveInput = moveInput - vector3(0.0, 0.0, 1.0)
+        end
+
+        local inputLen = #(moveInput)
+        if inputLen > 0.001 then
+            moveInput = moveInput / inputLen
+        end
+        local targetInputVelocity = moveInput * currentMoveSpeed
 
         -- Désactiver les actions conflictuelles
         DisableControlAction(0, 21, true)  -- LSHIFT
@@ -557,9 +573,9 @@ local function gizmoLoop(entity)
             isDragging = false
         end
 
-        -- AUTO-PAN FLUIDE DE LA CAMÉRA QUAND LE PROP ARRIVE À L'EXTRÉMITÉ DE L'ÉCRAN
-        local targetPanVelocity = vector3(0.0, 0.0, 0.0)
-        if isDragging and currentEntity and DoesEntityExist(currentEntity) and not isMovingCam and not isHoldingRMB then
+        -- SUIVI FLUIDE DE CAMÉRA STYLE CODEWALKER (Extrémités de l'écran lors du drag)
+        local edgePushVelocity = vector3(0.0, 0.0, 0.0)
+        if isDragging and currentEntity and DoesEntityExist(currentEntity) and not isHoldingRMB then
             local propCoords = GetEntityCoords(currentEntity)
             local onScreen, screenX, screenY = GetScreenCoordFromWorldCoord(propCoords.x, propCoords.y, propCoords.z)
             
@@ -570,11 +586,11 @@ local function gizmoLoop(entity)
             local pFactorX, pFactorY = 0.0, 0.0
             if forwardDot > 0 then
                 if onScreen then
-                    -- Zone d'extrémité pour le prop : 22% des bords
-                    pFactorX = calculateEdgeFactor(screenX, 0.22)
-                    pFactorY = calculateEdgeFactor(screenY, 0.22)
+                    -- Zone d'extrémité pour le prop : 20% des bords
+                    pFactorX = calculateEdgeFactor(screenX, 0.20)
+                    pFactorY = calculateEdgeFactor(screenY, 0.20)
                 else
-                    -- Si le prop est sorti du champ visuel, pan dans sa direction
+                    -- Si le prop sort de l'écran, poussée dans sa direction
                     local rightDot = (toProp.x * camRight.x) + (toProp.y * camRight.y) + (toProp.z * camRight.z)
                     local upDot = (toProp.x * camUp.x) + (toProp.y * camUp.y) + (toProp.z * camUp.z)
                     pFactorX = rightDot > 0 and 1.0 or -1.0
@@ -585,24 +601,31 @@ local function gizmoLoop(entity)
             -- Détecte également si le curseur de la souris atteint le bord pendant la manipulation
             local mouseX = GetControlNormal(0, 239)
             local mouseY = GetControlNormal(0, 240)
-            local mFactorX = calculateEdgeFactor(mouseX, 0.10)
-            local mFactorY = calculateEdgeFactor(mouseY, 0.10)
+            local mFactorX = calculateEdgeFactor(mouseX, 0.08)
+            local mFactorY = calculateEdgeFactor(mouseY, 0.08)
 
             local moveFactorX = (math.abs(pFactorX) > math.abs(mFactorX)) and pFactorX or mFactorX
             local moveFactorY = (math.abs(pFactorY) > math.abs(mFactorY)) and pFactorY or mFactorY
 
-            -- Vitesse de croisière maximale douce et lissage exponentiel (Lerp)
-            local edgePanSpeed = 0.22
-            targetPanVelocity = (camRight * moveFactorX - camUp * moveFactorY) * edgePanSpeed
-            autoPanVelocity = autoPanVelocity + (targetPanVelocity - autoPanVelocity) * 0.12
-        else
-            -- Amortissement doux et progressif à l'arrêt pour une fluidité parfaite sans à-coup
-            autoPanVelocity = autoPanVelocity * 0.80
+            if math.abs(moveFactorX) > 0.01 or math.abs(moveFactorY) > 0.01 then
+                edgePushVelocity = (camRight * moveFactorX - camUp * moveFactorY) * (currentMoveSpeed * 1.1)
+            end
         end
 
-        if #(autoPanVelocity) > 0.0005 then
+        -- PHYSIQUE ET INERTIE DE VOL CODEWALKER UNIFIÉE (Damping / Friction cinématique)
+        local totalTargetVelocity = targetInputVelocity + edgePushVelocity
+
+        if #(totalTargetVelocity) > 0.001 then
+            -- Accélération progressive et continue
+            camVelocity = camVelocity + (totalTargetVelocity - camVelocity) * 0.16
+        else
+            -- Décélération et friction soyeuse (inertie CodeWalker)
+            camVelocity = camVelocity * 0.82
+        end
+
+        if #(camVelocity) > 0.0002 then
             local curCam = GetCamCoord(cam)
-            SetCamCoord(cam, curCam.x + autoPanVelocity.x, curCam.y + autoPanVelocity.y, curCam.z + autoPanVelocity.z)
+            SetCamCoord(cam, curCam.x + camVelocity.x, curCam.y + camVelocity.y, curCam.z + camVelocity.z)
         end
 
         -- SÉLECTION D'UN AUTRE PROP PAR CLIC GAUCHE DANS LE MONDE
@@ -957,3 +980,20 @@ lib.addKeybind({
         end
     end
 })
+
+-- Nettoyage complet si le script est arrêté ou redémarré en plein mode Gizmo
+AddEventHandler('onResourceStop', function(resourceName)
+    if GetCurrentResourceName() ~= resourceName then return end
+    gizmoEnabled = false
+    isCursorActive = false
+    pcall(LeaveCursorMode)
+    pcall(function() lib.hideTextUI() end)
+    if currentCam and DoesCamExist(currentCam) then
+        RenderScriptCams(false, false, 0, true, true)
+        DestroyCam(currentCam, false)
+        currentCam = nil
+    end
+    local playerPed = PlayerPedId()
+    FreezeEntityPosition(playerPed, false)
+    SetEntityVisible(playerPed, true, false)
+end)

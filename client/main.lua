@@ -2,6 +2,11 @@ placedObjects = {}
 local isUIOpen = false
 local highlightedEntity = nil
 
+-- Sécurité au chargement du script (ex: après un restart en pleine interface)
+SetNuiFocus(false, false)
+SetNuiFocusKeepInput(false)
+SendNUIMessage({ action = 'forceClose' })
+
 -- Historique Annuler / Rétablir (Undo / Redo)
 local undoHistory = {}
 local redoHistory = {}
@@ -695,9 +700,16 @@ RegisterNUICallback('exportYmap', function(data, cb)
     })
 end)
 
--- Nettoyage si la ressource s'arrête
+-- Nettoyage si la ressource s'arrête (ou est redémarrée)
 AddEventHandler('onResourceStop', function(resourceName)
     if GetCurrentResourceName() ~= resourceName then return end
+
+    -- Libérer immédiatement le focus souris NUI
+    isUIOpen = false
+    SetNuiFocus(false, false)
+    SetNuiFocusKeepInput(false)
+    SendNUIMessage({ action = 'forceClose' })
+
     for i = 1, #placedObjects do
         local ent = placedObjects[i]
         if DoesEntityExist(ent.handle) then
@@ -707,4 +719,12 @@ AddEventHandler('onResourceStop', function(resourceName)
     local playerPed = PlayerPedId()
     SetEntityVisible(playerPed, true, false)
     FreezeEntityPosition(playerPed, false)
+end)
+
+AddEventHandler('onClientResourceStart', function(resourceName)
+    if GetCurrentResourceName() ~= resourceName then return end
+    isUIOpen = false
+    SetNuiFocus(false, false)
+    SetNuiFocusKeepInput(false)
+    SendNUIMessage({ action = 'forceClose' })
 end)
